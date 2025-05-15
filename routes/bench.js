@@ -70,8 +70,9 @@ let httpsAgent = null;
 // }
 
 // Example if you need to bypass SSL validation (USE WITH EXTREME CAUTION, NOT RECOMMENDED FOR PRODUCTION):
-// const agent = new https.Agent({ rejectUnauthorized: false });
+
 */
+const agent = new https.Agent({ rejectUnauthorized: false });
 
 
 router.post('/fetchBenches', async (req, res) => {
