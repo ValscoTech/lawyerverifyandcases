@@ -5,7 +5,7 @@ const https = require('https'); // Required for creating custom agents
 
 // You likely need the 'https-proxy-agent' library for proper SSL handling with proxies
 // npm install https-proxy-agent
-const HttpsProxyAgent = require('https-proxy-agent');
+const {HttpsProxyAgent} = require('https-proxy-agent');
 
 
 const router = express.Router();
