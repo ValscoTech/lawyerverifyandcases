@@ -116,8 +116,12 @@ router.post('/select-district-court', asyncHandler(async (req, res) => {
         return res.status(400).json({ error: 'District court base URL is required' });
     }
 
-    // You might want to validate districtCourtBaseUrl format or against the districts list in session
-    // For simplicity, we'll just store the URL.
+    // Optionally, you might want to perform a GET request to the districtCourtBaseUrl
+    // here to get initial cookies specific to that domain, although the curls
+    // imply cookies from ecourts.gov.in might transfer or new ones are set
+    // on the first request to the .dcourts.gov.in domain (like /case-status-search...).
+    // For simplicity, we'll just store the URL and rely on subsequent calls
+    // (like /case-search-init or /search-case-by-cin) to handle cookies.
 
     // --- Update session with the selected district court URL ---
     req.session.ecourtsState.selectedDistrictCourtUrl = districtCourtBaseUrl;
@@ -142,7 +146,7 @@ router.post('/case-search-init', asyncHandler(async (req, res) => {
 
     // --- Inline Session Check: Requires ecourtsState, selectedDistrictCourtUrl, and cookies ---
     if (!req.session.ecourtsState || !req.session.ecourtsState.selectedDistrictCourtUrl || !req.session.ecourtsState.cookies) {
-        console.warn('[Server] Session check failed for /case-search-init: Missing ecourtsState, selectedDistrictCourtUrl, or cookies.');
+        console.warn('[Server] Session check failed for /case-search-init: Missing required session data.');
         return res.status(401).json({ error: 'Session expired or district court not selected. Please select a district first.' });
     }
 
@@ -198,9 +202,14 @@ router.get('/captcha/:scid', asyncHandler(async (req, res) => {
         return res.status(400).json({ error: 'Invalid scid or session mismatch.' });
     }
 
+    // Construct the full captcha URL using the stored district court base URL and scid
+    const captchaUrl = `${selectedDistrictCourtUrl}/?_siwp_captcha=null&id=${sessionScid}`;
+
+
     try {
         // Call the service function to get the captcha image data
-        const { imageData, cookies: updatedCookies } = await ecourtsService.getCaptchaImage(selectedDistrictCourtUrl, sessionScid, cookies);
+        // Pass the constructed captchaUrl and the cookies from session
+        const { imageData, cookies: updatedCookies } = await ecourtsService.getCaptchaImage(captchaUrl, cookies);
 
         // --- Update session with new cookies from captcha request ---
         req.session.ecourtsState.cookies = updatedCookies; // Update cookies
@@ -216,6 +225,7 @@ router.get('/captcha/:scid', asyncHandler(async (req, res) => {
             res.setHeader('Content-Type', 'image/png'); // Assuming PNG, verify actual type if needed
             res.send(imageData);
         });
+
 
     } catch (error) {
         console.error('[Server] Error in /captcha/:scid route:', error.message);

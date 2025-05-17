@@ -330,11 +330,20 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
     }
 }
 
-// --- Replicate Curl 4: Get Captcha Image ---
-async function getCaptchaImage(districtCourtBaseUrl, scid, cookies) {
-    console.log(`[Service] Fetching captcha image for scid: ${scid}`);
-     const captchaUrl = `${districtCourtBaseUrl}/?_siwp_captcha=null&id=${scid}`; // Matching curl 4 URL structure
-     const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`;
+// --- Replicate Curl 4: Get Captcha Image (Corrected Parameter and Logic) ---
+async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captcha URL
+    console.log(`[Service] Fetching captcha image from URL: ${captchaUrl}`);
+    // We need the districtCourtBaseUrl for the Referer header.
+    // Extract it from the captchaUrl.
+    const districtCourtBaseUrlMatch = captchaUrl.match(/^(https?:\/\/[^\/]+)/);
+    const districtCourtBaseUrl = districtCourtBaseUrlMatch ? districtCourtBaseUrlMatch[1] : null;
+
+    if (!districtCourtBaseUrl) {
+         console.error('[Service] Could not extract districtCourtBaseUrl from captchaUrl:', captchaUrl);
+         throw new Error('Invalid captcha URL provided.');
+    }
+
+    const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`;
 
 
     const headersToForward = {
@@ -346,8 +355,25 @@ async function getCaptchaImage(districtCourtBaseUrl, scid, cookies) {
         'Sec-Fetch-Dest': 'image',
         'Sec-Fetch-Mode': 'no-cors',
         'Sec-Fetch-Site': 'same-origin',
-        'Cookie': cookies // Use cookies from previous steps
+        'Cookie': cookies // Use cookies from previous steps (should include PHPSESSID and pll_language)
     };
+
+    // --- NEW: Log cookies being sent ---
+    console.log('[Service] Sending Cookies with Captcha Request:', headersToForward['Cookie']);
+    // --- END NEW ---
+
+    // --- NEW: Check for specific cookies ---
+    const hasPHPSESSID = cookies.includes('PHPSESSID=');
+    const hasPllLanguage = cookies.includes('pll_language=');
+    if (!hasPHPSESSID || !hasPllLanguage) {
+        console.warn(`⚠️ Missing expected cookies for captcha request. PHPSESSID: ${hasPHPSESSID}, pll_language: ${hasPllLanguage}`);
+        // This warning indicates a likely problem upstream in cookie capture/session management.
+        // The request will still be made with whatever cookies are present.
+    } else {
+        console.log('✅ Expected cookies (PHPSESSID, pll_language) are present in the cookie string.');
+    }
+    // --- END NEW ---
+
 
     try {
         const response = await makeRequest('GET', captchaUrl, null, headersToForward, 'arraybuffer'); // responseType: 'arraybuffer' for image
@@ -372,7 +398,20 @@ async function getCaptchaImage(districtCourtBaseUrl, scid, cookies) {
              // Decide if this should throw an error or return null/error indicator
              throw new Error(`Received non-image data for captcha: ${contentType}`);
          }
-        // --- End validation ---
+
+        // --- NEW: Log first few bytes of image data ---
+        if (response.data && Buffer.isBuffer(response.data) && response.data.length > 0) {
+            const dataPreviewHex = response.data.slice(0, 16).toString('hex'); // Log first 16 bytes as hex
+            console.log("Raw Captcha Image Data Preview (Hex):", dataPreviewHex + '...');
+            if (!dataPreviewHex.startsWith('89504e47')) {
+                 console.warn("⚠️ Captcha image data does NOT start with PNG signature (89504e47). Data might be corrupted or not a PNG.");
+            } else {
+                 console.log("🎉 Captcha image data starts with PNG signature.");
+            }
+        } else {
+            console.log("Raw Captcha Image Data is empty.");
+        }
+        // --- END NEW ---
 
 
         return { imageData: response.data, cookies: updatedCookies };
@@ -386,6 +425,7 @@ async function getCaptchaImage(districtCourtBaseUrl, scid, cookies) {
         throw new Error(`Failed to fetch captcha image: ${error.message}`);
     }
 }
+
 
 // --- Replicate Curl 5 (Search by Litigant Name etc.): Submit Case Search Form ---
 async function submitCaseSearch(districtCourtBaseUrl, scid, token, captchaValue, searchParams, cookies) {
