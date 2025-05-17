@@ -216,6 +216,7 @@ async function getDistrictsForState(stateLink, cookies) {
         // Selector needs to be verified based on actual HTML (e.g., select#district_code or table)
 
         // Example 1: Districts in a <select> dropdown (common)
+        // UPDATED SELECTOR based on screenshot
         $('select[name="sateist"] option').each((i, el) => {
              const value = $(el).val();
              const text = $(el).text().trim();
@@ -258,8 +259,9 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
         'Cookie': cookies // Use cookies from previous steps
     };
 
+    let response;
     try {
-        const response = await makeRequest('GET', searchPageUrl, null, headersToForward);
+        response = await makeRequest('GET', searchPageUrl, null, headersToForward);
 
         console.log('[Service] Case search page status:', response.status);
 
@@ -271,6 +273,7 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
         const $ = cheerio.load(response.data);
 
         // Extract scid and token name/value from hidden inputs
+        // Selectors based on screenshot: input with name="scid" and input with name starting with "tok_"
         const scid = $('input[name="scid"]').val();
         let tokenName = null;
         let tokenValue = null;
@@ -285,14 +288,20 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
             }
         });
 
-        if (!scid) {
-            console.error('[Service] Could not find scid input on the case search page.');
-            throw new Error('Could not extract scid from case search page.');
+        if (!scid || !tokenName || !tokenValue) {
+            console.error('[Service] Could not find scid or token input on the case search page.');
+            // --- NEW: Log response data if scid or token are not found ---
+            if (response && response.data) {
+                 try {
+                     console.error("eCourts Response Data (HTML) when scid/token not found:", Buffer.from(response.data).toString('utf8'));
+                 } catch(e) {
+                     console.error("Could not convert response data to string for logging when scid/token not found.");
+                     console.error("eCourts Response Data (Binary/Unknown) when scid/token not found:", response.data);
+                 }
+            }
+            // --- END NEW ---
+            throw new Error('Could not extract scid or token from case search page.');
         }
-         if (!tokenName || !tokenValue) {
-             console.error('[Service] Could not find the token input (name starts with "tok_") on the case search page.');
-             throw new Error('Could not extract token from case search page.');
-         }
 
         console.log('[Service] Extracted scid:', scid);
         console.log('[Service] Extracted token:', { name: tokenName, value: tokenValue });
@@ -307,7 +316,15 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
         console.error(`[Service] Error in getCaseSearchPageData (${districtCourtBaseUrl}):`, error.message);
          if (error.response) {
              console.error("eCourts Response Status:", error.response.status);
-             // console.error("eCourts Response Data:", error.response.data); // Avoid logging large HTML
+             // Log response data for non-image requests if not already logged above
+             if (!error.message.includes('Could not extract scid or token')) {
+                 try {
+                     console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+                 } catch(e) {
+                     console.error("Could not convert error response data to string.");
+                     console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
+                 }
+             }
          }
         throw new Error(`Failed to fetch case search page data: ${error.message}`);
     }
