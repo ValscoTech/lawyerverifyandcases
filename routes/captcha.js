@@ -34,15 +34,14 @@ router.post("/fetchCaptcha", async (req, res) => {
         const initialCookies = req.session.initialEcourtsCookies || '';
         if (!initialCookies) {
              console.warn("⚠️ Initial eCourts cookies not found in session for fetchCaptcha. Request might be blocked.");
-             // If the curl works WITH these cookies, they are likely required.
+             // Based on the curl, these cookies are likely required.
              // Consider making this a fatal error:
              // return res.status(500).json({ error: "Initial eCourts cookies missing from session. Please run fetchBenches first." });
         }
 
         // Headers to be forwarded by ScraperAPI to the target captcha URL
-        // These mimic a browser request and include the necessary cookies and other curl headers.
         const headersToForward = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Updated User-Agent to match curl
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Match curl
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5', // Added from curl
             'Accept-Encoding': 'gzip, deflate, br',
@@ -59,7 +58,7 @@ router.post("/fetchCaptcha", async (req, res) => {
         };
 
         const axiosConfig = {
-            responseType: "arraybuffer",
+            responseType: "arraybuffer", // Get raw binary data
             timeout: 45000,
         };
 
@@ -90,26 +89,57 @@ router.post("/fetchCaptcha", async (req, res) => {
         console.log("Response Data Length:", response.data ? response.data.length : 'No data');
         console.log("Set-Cookie Header(s):", response.headers["set-cookie"]); // These will be the *new* captcha cookies
 
-        // --- NEW: Log a preview of the raw binary data ---
-        if (response.data && response.data.length > 0) {
-             const dataPreview = response.data.slice(0, 50).toString('hex') + '...'; // Log first 50 bytes as hex
-             console.log("Raw Response Data Preview (Hex):", dataPreview);
+        // --- NEW: More detailed raw data logging AND slicing ---
+        let responseData = response.data;
+        let slicedData = responseData; // Start with original data
+
+        if (responseData && Buffer.isBuffer(responseData) && responseData.length > 0) {
+             const dataPreviewHex = responseData.slice(0, 64).toString('hex'); // Log original first 64 bytes as hex
+             console.log("Raw Response Data Preview (Original Hex):", dataPreviewHex + '...');
+
+             // Attempt to slice off the first 3 bytes (based on the 'e280b0' prefix observed)
+             const sliceOffset = 3; // Number of bytes to slice off
+             if (responseData.length > sliceOffset) {
+                 slicedData = responseData.slice(sliceOffset);
+                 const slicedDataPreviewHex = slicedData.slice(0, 64).toString('hex');
+                 console.log(`Raw Response Data Preview (Sliced by ${sliceOffset} bytes, Hex):`, slicedDataPreviewHex + '...');
+
+                 // Check if the sliced data starts with the PNG signature (89 50 4E 47)
+                 if (slicedDataPreviewHex.startsWith('89504e47')) {
+                     console.log("🎉 Sliced data starts with PNG signature! The issue was likely prepended bytes.");
+                 } else {
+                      console.warn("⚠️ Sliced data does NOT start with PNG signature. Slicing offset might be wrong, or data is still corrupted.");
+                 }
+
+             } else {
+                 console.warn(`⚠️ Response data length (${responseData.length}) is too short to slice by ${sliceOffset} bytes.`);
+             }
+
+             // Also try logging a small portion as text, just in case it's an error message
+             try {
+                 const dataPreviewText = responseData.slice(0, 200).toString('utf8').replace(/[\r\n]+/g, ' '); // Log first 200 chars as text, cleaning newlines
+                 console.log("Raw Response Data Preview (Original Text):", dataPreviewText + '...');
+             } catch(e) {
+                 console.log("Could not decode original raw data preview as text.");
+             }
+        } else {
+            console.log("Raw Response Data is empty or not a Buffer.");
         }
         // --- END NEW ---
 
 
-        // --- Strip charset from Content-Type ---
+        // --- Strip charset from Content-Type for the response header ---
         let contentType = response.headers["content-type"] || "image/png";
         if (contentType.includes(';')) {
             contentType = contentType.split(';')[0].trim();
-            console.log(`Cleaned Content-Type Header for Base64: ${contentType}`);
+            console.log(`Cleaned Content-Type Header for Response: ${contentType}`);
         }
 
         if (!contentType.startsWith('image/')) {
             console.error(`🚨 WARNING: Received non-image content type: ${contentType}. Expected image/*.`);
             try {
-                const responseText = Buffer.from(response.data).toString('utf8');
-                console.error('Non-image response content preview (first 500 chars):', responseText.substring(0, 500));
+                const responseText = Buffer.from(responseData).toString('utf8'); // Use original data for full preview
+                console.error('Non-image response content preview (full):', responseText);
             } catch (bufferErr) {
                 console.error('Could not convert non-image data to string for preview:', bufferErr);
             }
@@ -118,11 +148,6 @@ router.post("/fetchCaptcha", async (req, res) => {
                 contentType: contentType
             });
         }
-
-        // Ensure data is a Buffer before converting to Base64
-        const responseBuffer = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
-        const base64Image = responseBuffer.toString("base64");
-
 
         // --- Capture and Store the NEW Captcha Cookies ---
         const setCookie = response.headers["set-cookie"] || [];
@@ -138,16 +163,23 @@ router.post("/fetchCaptcha", async (req, res) => {
         req.session.save((err) => {
             if (err) {
                 console.error("⚠️ Error saving session after fetchCaptcha:", err);
-                return res.status(500).json({ error: "Session save failed after fetching captcha" });
+                // Decide if session save failure should prevent sending the image
+                // For now, we'll proceed to send the image but log the error.
             }
 
             console.log("✅ Captcha Cookies Stored (for subsequent steps):", req.session.captchaCookies);
 
-            // Send the Base64 image in the JSON response
-            res.json({
-                sessionID: req.sessionID, // Your Express session ID
-                captchaImage: `data:${contentType};base64,${base64Image}`, // Use cleaned contentType
-            });
+            // --- MODIFIED: Send the SLICED raw response data directly ---
+            // Set the Content-Type header to match the image type
+            res.setHeader("Content-Type", contentType);
+            // Optional: Set cache-control headers to prevent browser caching
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+            res.setHeader("Pragma", "no-cache");
+            res.setHeader("Expires", "0");
+
+            // Send the SLICED binary data as the response body
+            res.send(slicedData); // <-- Sending the potentially sliced data
+            // --- End MODIFIED ---
         });
 
     } catch (error) {
@@ -156,7 +188,7 @@ router.post("/fetchCaptcha", async (req, res) => {
             console.error('Error Response Status (from Axios):', error.response.status);
             try {
                  const errorResponseData = Buffer.from(error.response.data).toString('utf8');
-                 console.error('Error Response Data Preview (from Axios):', errorResponseData.substring(0, 500) + '...');
+                 console.error('Error Response Data Preview (from Axios):', errorResponseData); // Log full error response data
             } catch(bufferErr) {
                  console.error('Could not convert error response data to string:', bufferErr);
                  console.error('Error Response Data (Binary/Unknown):', error.response.data);
