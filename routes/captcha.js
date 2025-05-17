@@ -49,7 +49,7 @@ router.post("/fetchCaptcha", async (req, res) => {
         const axiosConfigToScraperAPI = {
             params: scraperApiParams,        // ScraperAPI specific query parameters
             headers: headersToForward,      // Headers to be forwarded to the target URL
-            responseType: "arraybuffer",    // Keep this for handling image data
+            responseType: "arraybuffer",    // Crucial for handling image data as a binary buffer
             timeout: 45000,                 // Timeout for the request to ScraperAPI
         };
 
@@ -71,18 +71,14 @@ router.post("/fetchCaptcha", async (req, res) => {
         }
         // --- End ScraperAPI Integration Logic ---
 
-        const base64Image = Buffer.from(captchaResponse.data, "binary").toString("base64");
-        const contentType = captchaResponse.headers["content-type"] || "image/png";
-
         // Capture Cookies - ScraperAPI will return the headers from the target URL.
-        // We still need to parse 'set-cookie' from ScraperAPI's response headers.
         const setCookie = captchaResponse.headers["set-cookie"] || [];
         const combinedCookies = setCookie.map((c) => c.split(";")[0]).join("; ");
 
         if (!combinedCookies) {
-            console.warn("⚠️ No cookies received from captcha response via ScraperAPI.");
-            // Consider if this should be a client-side error or continue without cookies
-            // depending on what happens next if cookies are truly optional for later steps.
+            console.warn("⚠️ No cookies received from captcha response via ScraperAPI. This might lead to issues with subsequent requests.");
+            // Decide if this is a fatal error or if you can proceed without cookies.
+            // For eCourts, cookies are generally required for subsequent steps.
             return res.status(500).json({ error: "Failed to fetch captcha cookies." });
         }
 
@@ -96,10 +92,21 @@ router.post("/fetchCaptcha", async (req, res) => {
 
             console.log("✅ Captcha Cookies Stored:", req.session.captchaCookies);
 
-            res.json({
-                sessionID: req.sessionID,
-                captchaImage: `data:${contentType};base64,${base64Image}`,
-            });
+            // --- MODIFIED PART: Directly return the image ---
+            const contentType = captchaResponse.headers["content-type"] || "image/png";
+            
+            // Set the Content-Type header so the browser knows it's an image
+            res.setHeader("Content-Type", contentType);
+            
+            // Optional: Set cache-control headers to prevent browser caching of the captcha
+            // as captchas are typically meant to be fresh for each attempt.
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+            res.setHeader("Pragma", "no-cache");
+            res.setHeader("Expires", "0");
+
+            // Send the raw image data as the response body
+            res.send(captchaResponse.data);
+            // --- End MODIFIED PART ---
         });
     } catch (error) {
         console.error("Captcha fetch error:", error.message);
