@@ -123,8 +123,8 @@ async function makeRequest(method, targetUrl, payload, headersToForward, respons
             api_key: scraperApiKey,
             url: targetUrl,
             // Add other ScraperAPI parameters if needed for specific URLs
-            // 'country_code': 'in', // Example
-            // 'render': 'true' // Example for JS-heavy pages
+            'country_code': 'in', // Example
+             'render': 'true' // Example for JS-heavy pages
         };
 
         axiosConfig.params = scraperApiParams; // ScraperAPI params go in query string
