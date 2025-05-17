@@ -433,6 +433,14 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
             console.log("Raw Captcha Image Data Preview (Hex):", dataPreviewHex + '...');
             if (!dataPreviewHex.startsWith('89504e47')) {
                  console.warn("⚠️ Captcha image data does NOT start with PNG signature (89504e47). Data might be corrupted or not a PNG.");
+                 // --- NEW: Log full response data as string if not a PNG ---
+                 try {
+                     const fullResponseText = Buffer.from(response.data).toString('utf8');
+                     console.error("Full Captcha Response Data (String) when not PNG:", fullResponseText);
+                 } catch(e) {
+                     console.error("Could not convert full captcha response data to string for logging.");
+                 }
+                 // --- END NEW ---
             } else {
                  console.log("🎉 Captcha image data starts with PNG signature.");
             }
@@ -448,7 +456,15 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         console.error('[Service] Error in getCaptchaImage:', error.message);
          if (error.response) {
              console.error("eCourts Response Status:", error.response.status);
-             // Do not log response.data for image requests as it's binary
+             // Do not log response.data for image requests as it's binary unless it was already logged above
+             if (!error.message.includes('Received non-image content type') && !error.message.includes('Captcha image data does NOT start with PNG signature')) {
+                  try {
+                     console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+                 } catch(e) {
+                     console.error("Could not convert error response data to string.");
+                     console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
+                 }
+             }
          }
         throw new Error(`Failed to fetch captcha image: ${error.message}`);
     }
