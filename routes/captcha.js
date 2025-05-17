@@ -27,7 +27,7 @@ router.post("/fetchCaptcha", async (req, res) => {
         const scraperApiParams = {
             api_key: scraperApiKey,
             url: targetCaptchaUrl,
-            // 'country_code': 'in', // Consider adding if needed
+           'country_code': 'in', // Consider adding if needed
         };
 
         // --- Include initial eCourts cookies from session ---

@@ -1,176 +1,483 @@
 const axios = require('axios');
 require('dotenv').config();
-const ECOURTS_BASE_URL = process.env.ECOURTS_BASE_URL || 'https://services.ecourts.gov.in/ecourtindia_v6/';
+const cheerio = require('cheerio');
+const { URLSearchParams } = require('url');
 
-let cachedCookies = null;
-let lastReceivedAppToken = null; // Variable to store the last received app_token
+// --- ScraperAPI Configuration ---
+const scraperApiKey = process.env.SCRAPERAPI_KEY;
+const scraperApiEndpoint = 'http://api.scraperapi.com/';
 
-async function getFreshAppToken() {
-    // First, check if we have a recently received app_token
-    if (lastReceivedAppToken) {
-        console.log('[eCourts Service] Using last received app_token.');
-        return lastReceivedAppToken;
+// Check if ScraperAPI key is provided
+if (!scraperApiKey) {
+    console.warn('WARNING: SCRAPERAPI_KEY environment variable is not set. ScraperAPI will not be used for ecourtsService requests.');
+}
+
+// Base URL for the main eCourts portal
+const ECOURTS_MAIN_PORTAL_URL = 'https://ecourts.gov.in/ecourts_home/index.php';
+
+// Common headers based on your curl requests - adjust as needed
+const commonHeaders = {
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', // Default for HTML pages
+    'accept-language': 'en-US,en;q=0.5',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Matching curl
+    'sec-ch-ua': '"Chromium";v="136", "Brave";v="136", "Not.A/Brand";v="99"', // Matching curl
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"', // Matching curl
+    'sec-fetch-dest': 'document', // Default for HTML pages
+    'sec-fetch-mode': 'navigate', // Default for HTML pages
+    'sec-fetch-site': 'same-origin', // Default for initial requests
+    'sec-fetch-user': '?1', // Default for user-initiated navigation
+    'upgrade-insecure-requests': '1', // Default for initial HTML requests
+    'sec-gpc': '1', // Matching curl
+};
+
+// Headers specifically for admin-ajax.php POST requests
+const ajaxHeaders = {
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'Accept-Language': 'en-US,en;q=0.7',
+    'Connection': 'keep-alive',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors', // Often 'cors' for AJAX, but check if 'no-cors' is needed via ScraperAPI
+    'Sec-Fetch-Site': 'same-origin', // Correct for requests from ScraperAPI to target
+    'Sec-GPC': '1',
+    'User-Agent': commonHeaders['user-agent'],
+    'X-Requested-With': 'XMLHttpRequest', // Important for AJAX requests
+    'sec-ch-ua': commonHeaders['sec-ch-ua'],
+    'sec-ch-ua-mobile': commonHeaders['sec-ch-ua-mobile'],
+    'sec-ch-ua-platform': commonHeaders['sec-ch-ua-platform'],
+    // Origin and Referer must be set dynamically
+    // Cookie must be set dynamically
+};
+
+
+// Function to extract cookies from response headers
+function extractCookies(setCookieHeader) {
+    if (!setCookieHeader) {
+        return '';
+    }
+    // Extract session cookies (like PHPSESSID) and others needed
+    const cookies = setCookieHeader
+        .map(c => c.split(';')[0])
+        // Filter relevant cookies if needed, or include all by default
+        // .filter(c => c.includes('PHPSESSID') || c.includes('pll_language'))
+        .join('; ');
+    return cookies;
+}
+
+// Helper to merge new cookies into existing ones, prioritizing new ones by name
+function mergeCookies(existingCookies, newCookiesString) {
+    if (!newCookiesString) return existingCookies;
+
+    const existingCookieMap = new Map();
+    existingCookies.split('; ').forEach(c => {
+        const [name, ...rest] = c.split('=');
+        if (name) existingCookieMap.set(name, `${name}=${rest.join('=')}`);
+    });
+
+    newCookiesString.split('; ').forEach(c => {
+        const [name, ...rest] = c.split('=');
+        if (name) existingCookieMap.set(name, `${name}=${rest.join('=')}`); // New cookies overwrite existing ones with the same name
+    });
+
+    return Array.from(existingCookieMap.values()).join('; ');
+}
+
+
+// --- Helper function to make requests via ScraperAPI or directly ---
+async function makeRequest(method, targetUrl, payload, headersToForward, responseType = 'text', timeout = 60000) {
+    const axiosConfig = {
+        method: method,
+        responseType: responseType,
+        timeout: timeout,
+        maxRedirects: 5, // Keep maxRedirects
+    };
+
+    let response;
+
+    if (scraperApiKey) {
+        console.log(`[Service] Attempting to make ${method} request via ScraperAPI to: ${targetUrl}`);
+        const scraperApiParams = {
+            api_key: scraperApiKey,
+            url: targetUrl,
+            // Add other ScraperAPI parameters if needed for specific URLs
+            // 'country_code': 'in', // Example
+            // 'render': 'true' // Example for JS-heavy pages
+        };
+
+        axiosConfig.params = scraperApiParams; // ScraperAPI params go in query string
+        axiosConfig.headers = headersToForward; // Headers to be forwarded by ScraperAPI
+
+        // For POST requests via ScraperAPI, the original payload goes in the body
+        if (method.toLowerCase() === 'post') {
+            axiosConfig.data = payload;
+        }
+
+        response = await axios(scraperApiEndpoint, axiosConfig); // Request goes to ScraperAPI endpoint
+
+    } else {
+        console.log(`[Service] Attempting to make ${method} request directly to: ${targetUrl}`);
+        axiosConfig.headers = headersToForward; // Headers for the direct request
+
+        // For direct requests, the payload goes in the data property for POST
+        if (method.toLowerCase() === 'post') {
+            axiosConfig.data = payload;
+        }
+        axiosConfig.url = targetUrl; // Target URL for direct request
+
+        response = await axios(axiosConfig); // Request goes directly to target URL
     }
 
-    const initialUrl = 'https://services.ecourts.gov.in/ecourtindia_v6/';
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
+    return response;
+}
+
+
+// --- Replicate Curl 1: Get States and their District Court Links ---
+async function getStatesAndDistrictLinks() {
+    console.log('[Service] Attempting to get states and district links...');
+    const url = ECOURTS_MAIN_PORTAL_URL;
+
+    const headersToForward = {
+        ...commonHeaders,
+        'cache-control': 'max-age=0',
+        'priority': 'u=0, i',
+        'Cookie': '' // Start with no cookies for the initial request
+    };
 
     try {
-        const response = await axios.get(initialUrl, {
-            headers: {
-                'User-Agent': userAgent,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Upgrade-Insecure-Requests': '1'
-            },
-            maxRedirects: 5,
+        const response = await makeRequest('GET', url, null, headersToForward);
+
+        console.log('[Service] Initial GET status:', response.status);
+
+        // Extract cookies from the response
+        const cookies = extractCookies(response.headers['set-cookie']);
+        console.log('[Service] Initial cookies obtained:', cookies);
+
+        const $ = cheerio.load(response.data);
+
+        const states = [];
+        // Selector needs to be verified based on actual HTML
+        $('a[href*="?p=dist_court/"]').each((i, el) => {
+            const link = $(el).attr('href');
+            const text = $(el).text().trim();
+            if (link && text) {
+                const stateCodeMatch = link.match(/\?p=dist_court\/([a-z]+)/i);
+                if (stateCodeMatch && stateCodeMatch[1]) {
+                    states.push({ name: text, link: `${ECOURTS_MAIN_PORTAL_URL}${link}`, state_code: stateCodeMatch[1] });
+                }
+            }
         });
 
-        const appTokenMatch = response.data.match(/<a class="scroll-to-top.*?app_token=(.*?)["&]/);
-        if (appTokenMatch && appTokenMatch[1]) {
-            const newToken = appTokenMatch[1];
-            lastReceivedAppToken = newToken; // Store the newly fetched token
-            console.log('[eCourts Service] Fetched new app_token from initial page.');
-            return newToken;
+        if (states.length === 0) {
+            console.warn('[Service] Could not find any state links on the initial page.');
         } else {
-            console.warn('[eCourts Service] Could not automatically extract app_token from initial page.');
-            return null;
+             console.log(`[Service] Found ${states.length} states.`);
         }
+
+        return { states, cookies };
+
     } catch (error) {
-        console.error('[eCourts Service] Error fetching fresh app token from initial page:', error.message);
-        return null;
+        console.error('[Service] Error in getStatesAndDistrictLinks:', error.message);
+        if (error.response) {
+            console.error("eCourts Response Status:", error.response.status);
+            // console.error("eCourts Response Data:", error.response.data); // Avoid logging large HTML
+        }
+        throw new Error(`Failed to fetch states and district links: ${error.message}`);
     }
 }
 
-async function getInitialCookies() {
-    if (cachedCookies) {
-        return cachedCookies;
-    }
-    const initialUrl = 'https://services.ecourts.gov.in/ecourtindia_v6/';
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
+// --- Replicate Curl 2: Get Districts for a State ---
+async function getDistrictsForState(stateLink, cookies) {
+    console.log(`[Service] Fetching districts from state link: ${stateLink}`);
+
+    const headersToForward = {
+        ...commonHeaders,
+        'referer': ECOURTS_MAIN_PORTAL_URL, // Referer is main portal URL
+        'Cookie': cookies // Use cookies from the initial request
+    };
+
     try {
-        const initialResponse = await axios.get(initialUrl, {
-            headers: {
-                'User-Agent': userAgent,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Upgrade-Insecure-Requests': '1'
-            },
-            maxRedirects: 5,
+        const response = await makeRequest('GET', stateLink, null, headersToForward);
+
+        console.log('[Service] State page status:', response.status);
+
+        // Update cookies from this response
+        const updatedCookies = mergeCookies(cookies, extractCookies(response.headers['set-cookie']));
+        console.log('[Service] Updated cookies after state page:', updatedCookies);
+
+
+        const $ = cheerio.load(response.data);
+
+        const districts = [];
+        // Selector needs to be verified based on actual HTML (e.g., select#district_code or table)
+
+        // Example 1: Districts in a <select> dropdown (common)
+        $('select[name="district_code"] option').each((i, el) => {
+            const value = $(el).val();
+            const text = $(el).text().trim();
+            if (value && value !== '' && text) { // Exclude empty or placeholder options
+                districts.push({ code: value, name: text });
+            }
         });
-        const cookiesArray = initialResponse.headers['set-cookie'] || [];
-        cachedCookies = cookiesArray.map(cookie => cookie.split(';')[0]).join('; ');
-        console.log(`[eCourts Service] Initial Cookies fetched: ${cachedCookies}`);
-        return cachedCookies;
-    } catch (error) {
-        console.error('[eCourts Service] Error fetching initial cookies:', error.message);
-        throw new Error('Failed to fetch initial cookies.');
-    }
-}
 
-async function makeECourtsRequest(endpoint, data = {}, cookies, customAppToken = null) {
-    const url = `${ECOURTS_BASE_URL}?p=${endpoint}`;
-    data.ajax_req = 'true';
-
-    const currentCookies = cookies || await getInitialCookies();
-    const freshAppToken = customAppToken || await getFreshAppToken(); // Use custom token if provided
-
-    if (!freshAppToken) {
-        console.warn('[eCourts Service] Warning: Could not fetch a fresh app token. Requests might fail.');
-        // You might want to handle this error more explicitly
-    }
-    data.app_token = freshAppToken;
-
-    const headers = {
-        'accept': 'application/json, text/javascript, */*; q=0.01',
-        'accept-language': 'en-US,en;q=0.5',
-        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'origin': 'https://services.ecourts.gov.in',
-        'referer': 'https://services.ecourts.gov.in/',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
-        'x-requested-with': 'XMLHttpRequest',
-        'Cookie': currentCookies || ''
-    };
-
-    console.log(`[eCourts Service] Requesting: ${url}`);
-    console.log(`[eCourts Service] Data: ${new URLSearchParams(data).toString()}`);
-    console.log(`[eCourts Service] Cookies: ${currentCookies}`);
-    console.log(`[eCourts Service] App Token: ${freshAppToken}`);
-
-    try {
-        const response = await axios.post(url, new URLSearchParams(data).toString(), { headers });
-        console.log(`[eCourts Service] Response Status from ${endpoint}: ${response.status}`);
-
-        // Check if the response contains an app_token and store it
-        if (response.data && response.data.app_token) {
-            lastReceivedAppToken = response.data.app_token;
-            console.log('[eCourts Service] Received and stored app_token from response.');
+        if (districts.length === 0) {
+            console.warn(`[Service] Could not find any district options on the page: ${stateLink}`);
+        } else {
+             console.log(`[Service] Found ${districts.length} districts.`);
         }
 
-        return response.data;
+        return { districts, cookies: updatedCookies };
+
     } catch (error) {
-        const status = error.response?.status;
-        const errorData = error.response?.data;
-        console.error(`[eCourts Service] Error calling ${endpoint}: Status ${status}`, errorData || error.message);
-        // Optionally, you might want to reset lastReceivedAppToken on error
-        // lastReceivedAppToken = null;
-        throw new Error(`eCourts API call to ${endpoint} failed with status ${status || 'N/A'}`);
+        console.error(`[Service] Error in getDistrictsForState (${stateLink}):`, error.message);
+         if (error.response) {
+             console.error("eCourts Response Status:", error.response.status);
+             // console.error("eCourts Response Data:", error.response.data); // Avoid logging large HTML
+         }
+        throw new Error(`Failed to fetch districts for state (${stateLink}): ${error.message}`);
     }
 }
 
-const getDistricts = async ({ state_code, cookies }) => {
-    if (!state_code) throw new Error('Missing state_code for getDistricts');
-    return makeECourtsRequest('casestatus/fillDistrict', { state_code }, cookies);
-};
 
-const getComplexes = async ({ state_code, dist_code, cookies }) => {
-    if (!state_code || !dist_code) throw new Error('Missing parameters for getComplexes');
-    return makeECourtsRequest('casestatus/fillcomplex', { state_code, dist_code }, cookies);
-};
+// --- Replicate Curl 3: Get Case Status Page Data (scid and token) ---
+async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
+    console.log(`[Service] Fetching case search page data from: ${districtCourtBaseUrl}`);
+    const searchPageUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`; // Matching curl 3 URL structure
+    const refererUrl = districtCourtBaseUrl + '/'; // Referer is often the base URL + /
 
-const setLocation = async ({ complex_code, selected_state_code, selected_dist_code, selected_est_code, cookies }) => {
-    if (!complex_code || !selected_state_code || !selected_dist_code) throw new Error('Missing parameters for setLocation');
-    const data = {
-        complex_code: complex_code.split('@')[0], // Extract the main code
-        selected_state_code,
-        selected_dist_code,
-        selected_est_code: selected_est_code || null // Keep as null for consistency
+    const headersToForward = {
+        ...commonHeaders,
+        'accept-language': 'en-US,en;q=0.7', // Matching curl 3
+        'referer': refererUrl,
+        'Cookie': cookies // Use cookies from previous steps
     };
-    return makeECourtsRequest('casestatus/set_data', data, cookies);
-};
 
-const fetchCaptchaToken = async ({ cookies }) => {
-    return makeECourtsRequest('casestatus/getCaptcha', {}, cookies);
-};
+    try {
+        const response = await makeRequest('GET', searchPageUrl, null, headersToForward);
 
-const submitPartySearch = async (searchParams) => {
-    const {
-        petres_name, rgyearP, case_status = 'Pending', fcaptcha_code,
-        state_code, dist_code, court_complex_code, est_code = null, // Keep as null for consistency
-        cookies, app_token // Receive the captcha specific app_token
-    } = searchParams;
-    if (!petres_name || !rgyearP || !fcaptcha_code || !state_code || !dist_code || !court_complex_code) {
-        throw new Error('Missing required parameters for party search submission');
+        console.log('[Service] Case search page status:', response.status);
+
+         // Update cookies from this response
+        const updatedCookies = mergeCookies(cookies, extractCookies(response.headers['set-cookie']));
+        console.log('[Service] Updated cookies after case search page:', updatedCookies);
+
+
+        const $ = cheerio.load(response.data);
+
+        // Extract scid and token name/value from hidden inputs
+        const scid = $('input[name="scid"]').val();
+        let tokenName = null;
+        let tokenValue = null;
+
+        $('input[type="hidden"]').each((i, el) => {
+            const name = $(el).attr('name');
+            const value = $(el).val();
+            if (name && name.startsWith('tok_')) {
+                tokenName = name;
+                tokenValue = value;
+                return false; // Stop iteration once found
+            }
+        });
+
+        if (!scid) {
+            console.error('[Service] Could not find scid input on the case search page.');
+            throw new Error('Could not extract scid from case search page.');
+        }
+         if (!tokenName || !tokenValue) {
+             console.error('[Service] Could not find the token input (name starts with "tok_") on the case search page.');
+             throw new Error('Could not extract token from case search page.');
+         }
+
+        console.log('[Service] Extracted scid:', scid);
+        console.log('[Service] Extracted token:', { name: tokenName, value: tokenValue });
+
+        return {
+            scid,
+            token: { name: tokenName, value: tokenValue },
+            cookies: updatedCookies
+        };
+
+    } catch (error) {
+        console.error(`[Service] Error in getCaseSearchPageData (${districtCourtBaseUrl}):`, error.message);
+         if (error.response) {
+             console.error("eCourts Response Status:", error.response.status);
+             // console.error("eCourts Response Data:", error.response.data); // Avoid logging large HTML
+         }
+        throw new Error(`Failed to fetch case search page data: ${error.message}`);
     }
-    const data = {
-        petres_name, rgyearP, case_status, fcaptcha_code,
-        state_code, dist_code, court_complex_code, est_code,app_token,    };
+}
 
-    console.log('[eCourts Service] submitPartySearch - Data being sent to makeECourtsRequest:', data);
-    console.log('[eCourts Service] submitPartySearch - Using app_token:', app_token);
+// --- Replicate Curl 4: Get Captcha Image ---
+async function getCaptchaImage(districtCourtBaseUrl, scid, cookies) {
+    console.log(`[Service] Fetching captcha image for scid: ${scid}`);
+     const captchaUrl = `${districtCourtBaseUrl}/?_siwp_captcha=null&id=${scid}`; // Matching curl 4 URL structure
+     const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`;
 
-    // Explicitly use app_token for the submitPartyName endpoint
-    const appTokenToUse = app_token;
 
-    return makeECourtsRequest('casestatus/submitPartyName', data, cookies, appTokenToUse);
-};
+    const headersToForward = {
+        ...commonHeaders,
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.7',
+        'Connection': 'keep-alive',
+        'Referer': refererUrl, // Referer is the search page
+        'Sec-Fetch-Dest': 'image',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Cookie': cookies // Use cookies from previous steps
+    };
+
+    try {
+        const response = await makeRequest('GET', captchaUrl, null, headersToForward, 'arraybuffer'); // responseType: 'arraybuffer' for image
+
+        console.log('[Service] Captcha image status:', response.status);
+
+         // Update cookies from this response (less likely for image requests to set significant cookies)
+        const updatedCookies = mergeCookies(cookies, extractCookies(response.headers['set-cookie']));
+        console.log('[Service] Updated cookies after captcha request:', updatedCookies);
+
+        // --- Basic validation if data looks like an image ---
+        const contentType = response.headers["content-type"] || "image/png";
+         if (!contentType.startsWith('image/')) {
+             console.error(`🚨 WARNING: Received non-image content type for captcha: ${contentType}. Expected image/*.`);
+             // Attempt to log non-image data preview
+             try {
+                 const responseText = Buffer.from(response.data).toString('utf8');
+                 console.error('Non-image captcha response content preview (first 500 chars):', responseText.substring(0, 500));
+             } catch(e) {
+                 console.error('Could not convert non-image captcha data to string for preview.');
+             }
+             // Decide if this should throw an error or return null/error indicator
+             throw new Error(`Received non-image data for captcha: ${contentType}`);
+         }
+        // --- End validation ---
+
+
+        return { imageData: response.data, cookies: updatedCookies };
+
+    } catch (error) {
+        console.error('[Service] Error in getCaptchaImage:', error.message);
+         if (error.response) {
+             console.error("eCourts Response Status:", error.response.status);
+             // Do not log response.data for image requests as it's binary
+         }
+        throw new Error(`Failed to fetch captcha image: ${error.message}`);
+    }
+}
+
+// --- Replicate Curl 5 (Search by Litigant Name etc.): Submit Case Search Form ---
+async function submitCaseSearch(districtCourtBaseUrl, scid, token, captchaValue, searchParams, cookies) {
+    console.log(`[Service] Submitting litigant search to: ${districtCourtBaseUrl}`);
+    const url = `${districtCourtBaseUrl}/wp-admin/admin-ajax.php`; // Matching curl 5 URL
+    const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`;
+
+    const params = new URLSearchParams();
+    params.append('action', 'get_parties'); // Specific action for this search type
+    params.append('es_ajax_request', '1');
+    params.append('submit', 'Search');
+
+    // Append search parameters provided by the user
+    params.append('service_type', searchParams.service_type);
+    params.append('est_code', searchParams.est_code);
+    params.append('litigant_name', searchParams.litigant_name);
+    params.append('reg_year', searchParams.reg_year);
+    params.append('case_status', searchParams.case_status);
+
+    // Append extracted scid and token name/value
+    params.append('scid', scid);
+    params.append(token.name, token.value); // Use the dynamic token name
+
+    // Append the captcha value provided by the user
+    params.append('siwp_captcha_value', captchaValue);
+
+    const headersToForward = {
+        ...ajaxHeaders, // Use common AJAX headers
+        'Origin': districtCourtBaseUrl, // Origin is the district court base URL
+        'Referer': refererUrl, // Referer is the search page
+        'Cookie': cookies // Use cookies from previous steps
+    };
+
+    try {
+        const response = await makeRequest('POST', url, params.toString(), headersToForward, 'json'); // responseType: 'json'
+
+        console.log('[Service] Litigant search submit status:', response.status);
+
+        // Update cookies from this response
+        const updatedCookies = mergeCookies(cookies, extractCookies(response.headers['set-cookie']));
+        console.log('[Service] Updated cookies after litigant search submit:', updatedCookies);
+
+        // The response data should be the search results (often JSON)
+        return { results: response.data, cookies: updatedCookies };
+
+    } catch (error) {
+        console.error('[Service] Error in submitCaseSearch (litigant):', error.message);
+         if (error.response) {
+             console.error("eCourts Response Status:", error.response.status);
+             // Log response data for non-image requests
+             try {
+                 console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+             } catch(e) {
+                 console.error("Could not convert error response data to string.");
+                 console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
+             }
+         }
+        throw new Error(`Failed to submit litigant case search: ${error.message}`);
+    }
+}
+
+
+// --- New Function (based on the new curl): Search by CIN ---
+async function searchCaseByCin(districtCourtBaseUrl, cino, cookies) {
+    console.log(`[Service] Submitting CIN search for CIN: ${cino} to: ${districtCourtBaseUrl}`);
+    const url = `${districtCourtBaseUrl}/wp-admin/admin-ajax.php`; // Same URL as other searches
+    const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`; // Referer from the new curl
+
+    const params = new URLSearchParams();
+    params.append('cino', cino); // CIN value
+    params.append('action', 'get_cnr_details'); // Specific action for CIN search
+    params.append('es_ajax_request', '1'); // Always 1 for AJAX requests
+
+    const headersToForward = {
+        ...ajaxHeaders, // Use common AJAX headers
+        'Origin': districtCourtBaseUrl, // Origin is the district court base URL
+        'Referer': refererUrl, // Referer from the new curl
+        'Cookie': cookies // Use cookies from previous steps
+    };
+
+    try {
+        const response = await makeRequest('POST', url, params.toString(), headersToForward, 'json'); // responseType: 'json'
+
+        console.log('[Service] CIN search submit status:', response.status);
+
+        // Update cookies from this response
+        const updatedCookies = mergeCookies(cookies, extractCookies(response.headers['set-cookie']));
+        console.log('[Service] Updated cookies after CIN search submit:', updatedCookies);
+
+
+        // The response data should be the search results for the CIN
+        return { results: response.data, cookies: updatedCookies };
+
+    } catch (error) {
+        console.error('[Service] Error in searchCaseByCin:', error.message);
+         if (error.response) {
+             console.error("eCourts Response Status:", error.response.status);
+             // Log response data for non-image requests
+             try {
+                 console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+             } catch(e) {
+                 console.error("Could not convert error response data to string.");
+                 console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
+             }
+         }
+        throw new Error(`Failed to submit CIN case search: ${error.message}`);
+    }
+}
+
 
 module.exports = {
-    getDistricts,
-    getComplexes,
-    setLocation,
-    submitPartySearch,
-    getInitialCookies,
-    getFreshAppToken, // Ensure this is exported
-    fetchCaptchaToken
+    getStatesAndDistrictLinks,
+    getDistrictsForState,
+    getCaseSearchPageData, // Needed for litigant search flow and possibly getting initial cookies for CIN search
+    getCaptchaImage, // Only for litigant search flow
+    submitCaseSearch, // Search by Litigant Name etc.
+    searchCaseByCin // New function for search by CIN
 };
