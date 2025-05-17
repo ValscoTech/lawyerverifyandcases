@@ -38,7 +38,7 @@ router.post("/fetchCaptcha", async (req, res) => {
         const axiosConfigToScraperAPI = {
             params: scraperApiParams,
             headers: headersToForward,
-            responseType: "arraybuffer", // Important: get raw binary data
+            responseType: "arraybuffer", // Crucial for getting raw binary data
             timeout: 45000,
         };
 
@@ -58,7 +58,6 @@ router.post("/fetchCaptcha", async (req, res) => {
             );
         }
 
-        // --- NEW DEBUGGING LOGS ---
         console.log("--- ScraperAPI/Direct Captcha Response Details ---");
         console.log("Status:", captchaResponse.status);
         console.log("Status Text:", captchaResponse.statusText);
@@ -66,31 +65,30 @@ router.post("/fetchCaptcha", async (req, res) => {
         console.log("Response Data Length:", captchaResponse.data ? captchaResponse.data.length : 'No data');
         console.log("Set-Cookie Header(s):", captchaResponse.headers["set-cookie"]);
 
-        // Check if the response data looks like an image or an error page
         const contentType = captchaResponse.headers["content-type"] || "image/png";
         if (!contentType.startsWith('image/')) {
             console.error(`🚨 WARNING: Received non-image content type: ${contentType}. Expected image/*.`);
-            // Attempt to decode as text if it's not an image, to see the content
             try {
                 const responseText = Buffer.from(captchaResponse.data).toString('utf8');
                 console.error('Non-image response content preview (first 500 chars):', responseText.substring(0, 500));
             } catch (bufferErr) {
-                console.error('Could not convert non-image data to string:', bufferErr);
+                console.error('Could not convert non-image data to string for preview:', bufferErr);
             }
             return res.status(500).json({ 
                 error: "Received non-image data for captcha. Target site might be blocking or returning an error page.",
                 contentType: contentType 
             });
         }
-        // --- END NEW DEBUGGING LOGS ---
 
+        // --- REVERTED PART: Encode to Base64 and send in JSON ---
+        const base64Image = Buffer.from(captchaResponse.data, "binary").toString("base64");
+        // --- END REVERTED PART ---
 
         const setCookie = captchaResponse.headers["set-cookie"] || [];
         const combinedCookies = setCookie.map((c) => c.split(";")[0]).join("; ");
 
         if (!combinedCookies) {
             console.warn("⚠️ No cookies received from captcha response. This is often required for subsequent requests.");
-            // Decide if this is a fatal error. For eCourts, it likely is.
             return res.status(500).json({ error: "Failed to fetch captcha cookies. It's possible the request was blocked." });
         }
 
@@ -103,11 +101,12 @@ router.post("/fetchCaptcha", async (req, res) => {
 
             console.log("✅ Captcha Cookies Stored:", req.session.captchaCookies);
 
-            res.setHeader("Content-Type", contentType);
-            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-            res.setHeader("Pragma", "no-cache");
-            res.setHeader("Expires", "0");
-            res.send(captchaResponse.data); // Send the raw image buffer
+            // --- REVERTED PART: Send JSON response ---
+            res.json({
+                sessionID: req.sessionID,
+                captchaImage: `data:${contentType};base64,${base64Image}`,
+            });
+            // --- END REVERTED PART ---
         });
     } catch (error) {
         console.error("Captcha fetch error:", error.message);
@@ -115,7 +114,7 @@ router.post("/fetchCaptcha", async (req, res) => {
             console.error('Error Response Status (from Axios):', error.response.status);
             console.error('Error Response Data Preview (from Axios):', String(error.response.data).substring(0, 500) + '...');
             console.error('Error Response Headers (from Axios):', error.response.headers);
-        } else if (error.code) { // e.g., network error like 'ECONNREFUSED', 'ETIMEDOUT'
+        } else if (error.code) {
             console.error('Network Error Code:', error.code);
             console.error('Network Error Message:', error.message);
         }
