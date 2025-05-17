@@ -365,6 +365,14 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
 
     const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`;
 
+    // --- NEW: Explicitly add pll_language=en to the cookies ---
+    let cookiesToSend = cookies;
+    if (!cookiesToSend.includes('pll_language=')) {
+        cookiesToSend = `pll_language=en${cookiesToSend ? '; ' + cookiesToSend : ''}`;
+        console.log('[Service] Added pll_language=en to cookies being sent.');
+    }
+    // --- END NEW ---
+
 
     const headersToForward = {
         ...commonHeaders,
@@ -375,7 +383,7 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         'Sec-Fetch-Dest': 'image',
         'Sec-Fetch-Mode': 'no-cors',
         'Sec-Fetch-Site': 'same-origin',
-        'Cookie': cookies // Use cookies from previous steps (should include PHPSESSID and pll_language)
+        'Cookie': cookiesToSend // Use the modified cookies string
     };
 
     // --- NEW: Log cookies being sent ---
@@ -383,8 +391,8 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
     // --- END NEW ---
 
     // --- NEW: Check for specific cookies ---
-    const hasPHPSESSID = cookies.includes('PHPSESSID=');
-    const hasPllLanguage = cookies.includes('pll_language=');
+    const hasPHPSESSID = cookiesToSend.includes('PHPSESSID=');
+    const hasPllLanguage = cookiesToSend.includes('pll_language=');
     if (!hasPHPSESSID || !hasPllLanguage) {
         console.warn(`⚠️ Missing expected cookies for captcha request. PHPSESSID: ${hasPHPSESSID}, pll_language: ${hasPllLanguage}`);
         // This warning indicates a likely problem upstream in cookie capture/session management.
@@ -401,7 +409,7 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         console.log('[Service] Captcha image status:', response.status);
 
          // Update cookies from this response (less likely for image requests to set significant cookies)
-        const updatedCookies = mergeCookies(cookies, extractCookies(response.headers['set-cookie']));
+        const updatedCookies = mergeCookies(cookiesToSend, extractCookies(response.headers['set-cookie'])); // Merge with cookiesToSend
         console.log('[Service] Updated cookies after captcha request:', updatedCookies);
 
         // --- Basic validation if data looks like an image ---
