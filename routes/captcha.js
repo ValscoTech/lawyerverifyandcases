@@ -23,21 +23,43 @@ router.post("/fetchCaptcha", async (req, res) => {
 
         const targetCaptchaUrl = "https://hcservices.ecourts.gov.in/hcservices/securimage/securimage_show.php";
 
+        // --- ScraperAPI Integration Logic ---
         const scraperApiParams = {
             api_key: scraperApiKey,
             url: targetCaptchaUrl,
+            // 'country_code': 'in', // Consider adding if needed
         };
 
+        // --- MODIFIED: Include initial eCourts cookies from session ---
+        // Retrieve the initial cookies captured during fetchBenches or a prior step
+        const initialCookies = req.session.initialEcourtsCookies || '';
+        if (!initialCookies) {
+             console.warn("⚠️ Initial eCourts cookies not found in session for fetchCaptcha. Proceeding, but request might be blocked.");
+             // Decide if this should be a fatal error or just a warning.
+             // Based on the curl, it seems these cookies ARE required.
+             // return res.status(500).json({ error: "Initial eCourts cookies missing from session." });
+        }
+
+        // Headers to be forwarded by ScraperAPI to the target captcha URL
+        // These mimic a browser request and NOW include the necessary cookies.
         const headersToForward = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
             'Referer': 'https://hcservices.ecourts.gov.in/',
+            'Cookie': initialCookies, // <--- CRUCIAL: Include the initial cookies here
+            // Add other headers from your curl command to match closely:
+            // 'priority': 'i',
+            // 'sec-ch-ua': '"Chromium";v="...", ...', // Match your browser/curl
+            // 'sec-ch-ua-mobile': '?0',
+            // 'sec-ch-ua-platform': '"Windows"',
+            // 'sec-fetch-dest': 'image', // Match curl
+            // 'sec-fetch-mode': 'no-cors', // Match curl (though 'cors' might also work via ScraperAPI)
+            // 'sec-fetch-site': 'same-origin', // Match curl
+            // 'sec-gpc': '1', // Match curl
         };
 
-        const axiosConfigToScraperAPI = {
-            params: scraperApiParams,
-            headers: headersToForward,
+        const axiosConfig = {
             responseType: "arraybuffer",
             timeout: 45000,
         };
@@ -46,76 +68,94 @@ router.post("/fetchCaptcha", async (req, res) => {
 
         if (scraperApiKey) {
             console.log('Attempting to fetch captcha via ScraperAPI...');
-            captchaResponse = await axios.get(
-                scraperApiEndpoint,
-                axiosConfigToScraperAPI
+            axiosConfig.params = scraperApiParams;
+            axiosConfig.headers = headersToForward; // Headers for the request to ScraperAPI
+            response = await axios.get(
+                scraperApiEndpoint, // Request goes to ScraperAPI
+                axiosConfig
             );
         } else {
             console.log('Attempting to fetch captcha directly (ScraperAPI key not set)...');
-            captchaResponse = await axios.get(
-                targetCaptchaUrl,
-                { responseType: "arraybuffer", headers: headersToForward, timeout: 45000 }
+             axiosConfig.headers = headersToForward; // Headers for the direct request
+             response = await axios.get(
+                targetCaptchaUrl, // Request goes directly to target
+                axiosConfig
             );
         }
+        // --- End ScraperAPI Integration Logic ---
 
         console.log("--- ScraperAPI/Direct Captcha Response Details ---");
-        console.log("Status:", captchaResponse.status);
-        console.log("Status Text:", captchaResponse.statusText);
-        console.log("Original Content-Type Header:", captchaResponse.headers["content-type"]); // Log original
-        console.log("Response Data Length:", captchaResponse.data ? captchaResponse.data.length : 'No data');
-        console.log("Set-Cookie Header(s):", captchaResponse.headers["set-cookie"]);
+        console.log("Status:", response.status);
+        console.log("Status Text:", response.statusText);
+        console.log("Original Content-Type Header:", response.headers["content-type"]);
+        console.log("Response Data Length:", response.data ? response.data.length : 'No data');
+        console.log("Set-Cookie Header(s):", response.headers["set-cookie"]); // These will be the *new* captcha cookies
 
-        // --- MODIFIED PART: Strip charset from Content-Type ---
-        let contentType = captchaResponse.headers["content-type"] || "image/png";
+        // --- Strip charset from Content-Type ---
+        let contentType = response.headers["content-type"] || "image/png";
         if (contentType.includes(';')) {
-            contentType = contentType.split(';')[0].trim(); // Take only the MIME type part
+            contentType = contentType.split(';')[0].trim();
             console.log(`Cleaned Content-Type Header for Base64: ${contentType}`);
         }
-        // --- END MODIFIED PART ---
 
         if (!contentType.startsWith('image/')) {
             console.error(`🚨 WARNING: Received non-image content type: ${contentType}. Expected image/*.`);
             try {
-                const responseText = Buffer.from(captchaResponse.data).toString('utf8');
+                const responseText = Buffer.from(response.data).toString('utf8');
                 console.error('Non-image response content preview (first 500 chars):', responseText.substring(0, 500));
             } catch (bufferErr) {
                 console.error('Could not convert non-image data to string for preview:', bufferErr);
             }
-            return res.status(500).json({ 
+            return res.status(500).json({
                 error: "Received non-image data for captcha. Target site might be blocking or returning an error page.",
-                contentType: contentType 
+                contentType: contentType
             });
         }
 
-        const base64Image = Buffer.from(captchaResponse.data, "binary").toString("base64");
+        const base64Image = Buffer.from(response.data, "binary").toString("base64");
 
-        const setCookie = captchaResponse.headers["set-cookie"] || [];
+        // --- Capture and Store the NEW Captcha Cookies ---
+        const setCookie = response.headers["set-cookie"] || [];
         const combinedCookies = setCookie.map((c) => c.split(";")[0]).join("; ");
 
         if (!combinedCookies) {
-            console.warn("⚠️ No cookies received from captcha response. This is often required for subsequent requests.");
-            return res.status(500).json({ error: "Failed to fetch captcha cookies. It's possible the request was blocked." });
+            console.warn("⚠️ No NEW cookies received from captcha response. This is unusual and might indicate a problem.");
+            // This might not be a fatal error if the initial cookies are sufficient for subsequent steps,
+            // but it's worth investigating if the captcha response should issue new session cookies.
+            // Decide based on observation of a working browser flow.
         }
 
+        // Store the NEW cookies from the captcha response in session for subsequent calls (like /api/case)
+        // This overwrites the previous captchaCookies if new ones are issued.
         req.session.captchaCookies = combinedCookies;
+
         req.session.save((err) => {
             if (err) {
-                console.error("⚠️ Error saving session:", err);
-                return res.status(500).json({ error: "Session save failed" });
+                console.error("⚠️ Error saving session after fetchCaptcha:", err);
+                return res.status(500).json({ error: "Session save failed after fetching captcha" });
             }
 
-            console.log("✅ Captcha Cookies Stored:", req.session.captchaCookies);
+            console.log("✅ Captcha Cookies Stored (for subsequent steps):", req.session.captchaCookies);
 
+            // Send the Base64 image in the JSON response
             res.json({
-                sessionID: req.sessionID,
+                sessionID: req.sessionID, // Your Express session ID
                 captchaImage: `data:${contentType};base64,${base64Image}`, // Use cleaned contentType
             });
         });
+
     } catch (error) {
         console.error("Captcha fetch error:", error.message);
         if (error.response) {
             console.error('Error Response Status (from Axios):', error.response.status);
-            console.error('Error Response Data Preview (from Axios):', String(error.response.data).substring(0, 500) + '...');
+            // Attempt to log error response data as text if possible
+            try {
+                 const errorResponseData = Buffer.from(error.response.data).toString('utf8');
+                 console.error('Error Response Data Preview (from Axios):', errorResponseData.substring(0, 500) + '...');
+            } catch(bufferErr) {
+                 console.error('Could not convert error response data to string:', bufferErr);
+                 console.error('Error Response Data (Binary/Unknown):', error.response.data);
+            }
             console.error('Error Response Headers (from Axios):', error.response.headers);
         } else if (error.code) {
             console.error('Network Error Code:', error.code);
