@@ -30,33 +30,32 @@ router.post("/fetchCaptcha", async (req, res) => {
             // 'country_code': 'in', // Consider adding if needed
         };
 
-        // --- MODIFIED: Include initial eCourts cookies from session ---
-        // Retrieve the initial cookies captured during fetchBenches or a prior step
+        // --- Include initial eCourts cookies from session ---
         const initialCookies = req.session.initialEcourtsCookies || '';
         if (!initialCookies) {
-             console.warn("⚠️ Initial eCourts cookies not found in session for fetchCaptcha. Proceeding, but request might be blocked.");
-             // Decide if this should be a fatal error or just a warning.
-             // Based on the curl, it seems these cookies ARE required.
-             // return res.status(500).json({ error: "Initial eCourts cookies missing from session." });
+             console.warn("⚠️ Initial eCourts cookies not found in session for fetchCaptcha. Request might be blocked.");
+             // If the curl works WITH these cookies, they are likely required.
+             // Consider making this a fatal error:
+             // return res.status(500).json({ error: "Initial eCourts cookies missing from session. Please run fetchBenches first." });
         }
 
         // Headers to be forwarded by ScraperAPI to the target captcha URL
-        // These mimic a browser request and NOW include the necessary cookies.
+        // These mimic a browser request and include the necessary cookies and other curl headers.
         const headersToForward = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Updated User-Agent to match curl
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5', // Added from curl
             'Accept-Encoding': 'gzip, deflate, br',
             'Referer': 'https://hcservices.ecourts.gov.in/',
             'Cookie': initialCookies, // <--- CRUCIAL: Include the initial cookies here
-            // Add other headers from your curl command to match closely:
-            // 'priority': 'i',
-            // 'sec-ch-ua': '"Chromium";v="...", ...', // Match your browser/curl
-            // 'sec-ch-ua-mobile': '?0',
-            // 'sec-ch-ua-platform': '"Windows"',
-            // 'sec-fetch-dest': 'image', // Match curl
-            // 'sec-fetch-mode': 'no-cors', // Match curl (though 'cors' might also work via ScraperAPI)
-            // 'sec-fetch-site': 'same-origin', // Match curl
-            // 'sec-gpc': '1', // Match curl
+            'priority': 'i', // Added from curl
+            'sec-ch-ua': '"Chromium";v="136", "Brave";v="136", "Not.A/Brand";v="99"', // Added/Updated from curl
+            'sec-ch-ua-mobile': '?0', // Added from curl
+            'sec-ch-ua-platform': '"Windows"', // Added from curl
+            'sec-fetch-dest': 'image', // Added from curl
+            'sec-fetch-mode': 'no-cors', // Added from curl
+            'sec-fetch-site': 'same-origin', // Added from curl
+            'sec-gpc': '1', // Added from curl
         };
 
         const axiosConfig = {
@@ -64,7 +63,7 @@ router.post("/fetchCaptcha", async (req, res) => {
             timeout: 45000,
         };
 
-        let captchaResponse;
+        let response;
 
         if (scraperApiKey) {
             console.log('Attempting to fetch captcha via ScraperAPI...');
@@ -91,6 +90,14 @@ router.post("/fetchCaptcha", async (req, res) => {
         console.log("Response Data Length:", response.data ? response.data.length : 'No data');
         console.log("Set-Cookie Header(s):", response.headers["set-cookie"]); // These will be the *new* captcha cookies
 
+        // --- NEW: Log a preview of the raw binary data ---
+        if (response.data && response.data.length > 0) {
+             const dataPreview = response.data.slice(0, 50).toString('hex') + '...'; // Log first 50 bytes as hex
+             console.log("Raw Response Data Preview (Hex):", dataPreview);
+        }
+        // --- END NEW ---
+
+
         // --- Strip charset from Content-Type ---
         let contentType = response.headers["content-type"] || "image/png";
         if (contentType.includes(';')) {
@@ -112,7 +119,10 @@ router.post("/fetchCaptcha", async (req, res) => {
             });
         }
 
-        const base64Image = Buffer.from(response.data, "binary").toString("base64");
+        // Ensure data is a Buffer before converting to Base64
+        const responseBuffer = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
+        const base64Image = responseBuffer.toString("base64");
+
 
         // --- Capture and Store the NEW Captcha Cookies ---
         const setCookie = response.headers["set-cookie"] || [];
@@ -120,13 +130,9 @@ router.post("/fetchCaptcha", async (req, res) => {
 
         if (!combinedCookies) {
             console.warn("⚠️ No NEW cookies received from captcha response. This is unusual and might indicate a problem.");
-            // This might not be a fatal error if the initial cookies are sufficient for subsequent steps,
-            // but it's worth investigating if the captcha response should issue new session cookies.
-            // Decide based on observation of a working browser flow.
         }
 
         // Store the NEW cookies from the captcha response in session for subsequent calls (like /api/case)
-        // This overwrites the previous captchaCookies if new ones are issued.
         req.session.captchaCookies = combinedCookies;
 
         req.session.save((err) => {
@@ -148,7 +154,6 @@ router.post("/fetchCaptcha", async (req, res) => {
         console.error("Captcha fetch error:", error.message);
         if (error.response) {
             console.error('Error Response Status (from Axios):', error.response.status);
-            // Attempt to log error response data as text if possible
             try {
                  const errorResponseData = Buffer.from(error.response.data).toString('utf8');
                  console.error('Error Response Data Preview (from Axios):', errorResponseData.substring(0, 500) + '...');
