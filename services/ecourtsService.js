@@ -216,13 +216,15 @@ async function getDistrictsForState(stateLink, cookies) {
         // Selector needs to be verified based on actual HTML (e.g., select#district_code or table)
 
         // Example 1: Districts in a <select> dropdown (common)
-        $('select[name="district_code"] option').each((i, el) => {
-            const value = $(el).val();
-            const text = $(el).text().trim();
-            if (value && value !== '' && text) { // Exclude empty or placeholder options
-                districts.push({ code: value, name: text });
-            }
-        });
+        $('select[name="sateist"] option').each((i, el) => {
+             const value = $(el).val();
+             const text = $(el).text().trim();
+             // Exclude empty or placeholder options, and the "Please Select" option
+             if (value && value !== '' && text && !text.includes('Please Select')) {
+                 districts.push({ code: value, name: text });
+             }
+         });
+
 
         if (districts.length === 0) {
             console.warn(`[Service] Could not find any district options on the page: ${stateLink}`);
