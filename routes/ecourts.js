@@ -203,7 +203,7 @@ router.get('/captcha/:scid', asyncHandler(async (req, res) => {
     }
 
     // Construct the full captcha URL using the stored district court base URL and scid
-    const captchaUrl = `${selectedDistrictCourtUrl}/?_siwp_captcha=null&id=${sessionScid}`;
+    const captchaUrl = `${selectedDistrictCourtUrl}/?_siwp_captcha&id=${sessionScid}`;
 
 
     try {
