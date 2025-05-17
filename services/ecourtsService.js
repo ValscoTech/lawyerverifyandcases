@@ -56,33 +56,53 @@ const ajaxHeaders = {
 // Function to extract cookies from response headers
 function extractCookies(setCookieHeader) {
     if (!setCookieHeader) {
+        console.log('[Service - Cookies] No Set-Cookie header found.');
         return '';
     }
+    console.log('[Service - Cookies] Raw Set-Cookie header:', setCookieHeader);
+
     // Extract session cookies (like PHPSESSID) and others needed
     const cookies = setCookieHeader
-        .map(c => c.split(';')[0])
-        // Filter relevant cookies if needed, or include all by default
-        // .filter(c => c.includes('PHPSESSID') || c.includes('pll_language'))
-        .join('; ');
-    return cookies;
+        .map(c => c.split(';')[0]);
+
+    console.log('[Service - Cookies] Extracted cookies (name=value):', cookies);
+
+    return cookies.join('; ');
 }
 
 // Helper to merge new cookies into existing ones, prioritizing new ones by name
 function mergeCookies(existingCookies, newCookiesString) {
-    if (!newCookiesString) return existingCookies;
+    console.log('[Service - Cookies] Merging cookies...');
+    console.log('[Service - Cookies] Existing cookies:', existingCookies);
+    console.log('[Service - Cookies] New cookies string:', newCookiesString);
+
+    if (!newCookiesString) {
+         console.log('[Service - Cookies] No new cookies to merge.');
+         return existingCookies;
+    }
 
     const existingCookieMap = new Map();
     existingCookies.split('; ').forEach(c => {
         const [name, ...rest] = c.split('=');
         if (name) existingCookieMap.set(name, `${name}=${rest.join('=')}`);
     });
+    console.log('[Service - Cookies] Existing cookies map:', existingCookieMap);
+
 
     newCookiesString.split('; ').forEach(c => {
         const [name, ...rest] = c.split('=');
-        if (name) existingCookieMap.set(name, `${name}=${rest.join('=')}`); // New cookies overwrite existing ones with the same name
+        if (name) {
+            existingCookieMap.set(name, `${name}=${rest.join('=')}`); // New cookies overwrite existing ones with the same name
+            console.log(`[Service - Cookies] Merged/Overwrote cookie: ${name}`);
+        }
     });
+    console.log('[Service - Cookies] Merged cookies map:', existingCookieMap);
 
-    return Array.from(existingCookieMap.values()).join('; ');
+
+    const mergedCookies = Array.from(existingCookieMap.values()).join('; ');
+    console.log('[Service - Cookies] Final merged cookies string:', mergedCookies);
+
+    return mergedCookies;
 }
 
 
