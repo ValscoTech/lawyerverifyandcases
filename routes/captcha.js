@@ -38,7 +38,7 @@ router.post("/fetchCaptcha", async (req, res) => {
         const axiosConfigToScraperAPI = {
             params: scraperApiParams,
             headers: headersToForward,
-            responseType: "arraybuffer", // Crucial for getting raw binary data
+            responseType: "arraybuffer",
             timeout: 45000,
         };
 
@@ -61,11 +61,18 @@ router.post("/fetchCaptcha", async (req, res) => {
         console.log("--- ScraperAPI/Direct Captcha Response Details ---");
         console.log("Status:", captchaResponse.status);
         console.log("Status Text:", captchaResponse.statusText);
-        console.log("Content-Type Header:", captchaResponse.headers["content-type"]);
+        console.log("Original Content-Type Header:", captchaResponse.headers["content-type"]); // Log original
         console.log("Response Data Length:", captchaResponse.data ? captchaResponse.data.length : 'No data');
         console.log("Set-Cookie Header(s):", captchaResponse.headers["set-cookie"]);
 
-        const contentType = captchaResponse.headers["content-type"] || "image/png";
+        // --- MODIFIED PART: Strip charset from Content-Type ---
+        let contentType = captchaResponse.headers["content-type"] || "image/png";
+        if (contentType.includes(';')) {
+            contentType = contentType.split(';')[0].trim(); // Take only the MIME type part
+            console.log(`Cleaned Content-Type Header for Base64: ${contentType}`);
+        }
+        // --- END MODIFIED PART ---
+
         if (!contentType.startsWith('image/')) {
             console.error(`🚨 WARNING: Received non-image content type: ${contentType}. Expected image/*.`);
             try {
@@ -80,9 +87,7 @@ router.post("/fetchCaptcha", async (req, res) => {
             });
         }
 
-        // --- REVERTED PART: Encode to Base64 and send in JSON ---
         const base64Image = Buffer.from(captchaResponse.data, "binary").toString("base64");
-        // --- END REVERTED PART ---
 
         const setCookie = captchaResponse.headers["set-cookie"] || [];
         const combinedCookies = setCookie.map((c) => c.split(";")[0]).join("; ");
@@ -101,12 +106,10 @@ router.post("/fetchCaptcha", async (req, res) => {
 
             console.log("✅ Captcha Cookies Stored:", req.session.captchaCookies);
 
-            // --- REVERTED PART: Send JSON response ---
             res.json({
                 sessionID: req.sessionID,
-                captchaImage: `data:${contentType};base64,${base64Image}`,
+                captchaImage: `data:${contentType};base64,${base64Image}`, // Use cleaned contentType
             });
-            // --- END REVERTED PART ---
         });
     } catch (error) {
         console.error("Captcha fetch error:", error.message);
