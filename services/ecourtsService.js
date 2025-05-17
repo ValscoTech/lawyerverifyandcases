@@ -14,6 +14,8 @@ if (!scraperApiKey) {
 
 // Base URL for the main eCourts portal
 const ECOURTS_MAIN_PORTAL_URL = 'https://ecourts.gov.in/ecourts_home/index.php';
+const ECOURTS_BASE_DOMAIN = 'https://ecourts.gov.in'; // Added base domain for link construction
+
 
 // Common headers based on your curl requests - adjust as needed
 const commonHeaders = {
@@ -163,7 +165,9 @@ async function getStatesAndDistrictLinks() {
             if (link && text) {
                 const stateCodeMatch = link.match(/\?p=dist_court\/([a-z]+)/i);
                 if (stateCodeMatch && stateCodeMatch[1]) {
-                    states.push({ name: text, link: `${ECOURTS_MAIN_PORTAL_URL}${link}`, state_code: stateCodeMatch[1] });
+                    // FIX: Correct link construction to avoid duplication
+                    const correctedLink = `${ECOURTS_BASE_DOMAIN}${link}`; // Append to base domain
+                    states.push({ name: text, link: correctedLink, state_code: stateCodeMatch[1] });
                 }
             }
         });
