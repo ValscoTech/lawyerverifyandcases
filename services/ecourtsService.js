@@ -437,7 +437,7 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
          }
 
         // --- Robust PNG signature check and data slicing with increased limit ---
-        let imageData = response.data; // Start with the raw data
+        let imageData = response.content; // Start with the raw data
         const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG signature bytes
         const searchLimit = Math.min(imageData.length, 2000); // Increased search limit to 2000 bytes
 
