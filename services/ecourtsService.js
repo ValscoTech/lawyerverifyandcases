@@ -107,6 +107,7 @@ function mergeCookies(existingCookies, newCookiesString) {
 
 
 // --- Helper function to make requests via ScraperAPI or directly ---
+// Keeping this for other requests, but captcha will use direct axios call
 async function makeRequest(method, targetUrl, payload, headersToForward, responseType = 'text', timeout = 60000) {
     const axiosConfig = {
         method: method,
@@ -350,9 +351,9 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
     }
 }
 
-// --- Replicate Curl 4: Get Captcha Image (Corrected Parameter and Logic) ---
+// --- Replicate Curl 4: Get Captcha Image (Direct Axios Call & Base64 Output) ---
 async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captcha URL
-    console.log(`[Service] Fetching captcha image from URL: ${captchaUrl}`);
+    console.log(`[Service] Fetching captcha image from URL: ${captchaUrl} using direct axios call.`);
     // We need the districtCourtBaseUrl for the Referer header.
     // Extract it from the captchaUrl.
     const districtCourtBaseUrlMatch = captchaUrl.match(/^(https?:\/\/[^\/]+)/);
@@ -373,21 +374,27 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
     }
     // --- END Explicitly add pll_language=en ---
 
-
-    const headersToForward = {
-        ...commonHeaders,
+    // --- Construct headers explicitly matching the curl command ---
+    const explicitCaptchaHeaders = {
         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.7',
         'Connection': 'keep-alive',
         'Referer': refererUrl, // Referer is the search page
         'Sec-Fetch-Dest': 'image',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'no-cors', // Matching curl
+        'Sec-Fetch-Site': 'same-origin', // Matching curl
+        'Sec-GPC': '1', // Matching curl
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Matching curl
+        'sec-ch-ua': '"Chromium";v="136", "Brave";v="136", "Not.A/Brand";v="99"', // Matching curl
+        'sec-ch-ua-mobile': '?0', // Matching curl
+        'sec-ch-ua-platform': '"Windows"', // Matching curl
         'Cookie': cookiesToSend // Use the modified cookies string
     };
+    // --- END Construct headers explicitly matching the curl command ---
+
 
     // --- Log cookies being sent ---
-    console.log('[Service] Sending Cookies with Captcha Request:', headersToForward['Cookie']);
+    console.log('[Service] Sending Cookies with Captcha Request:', explicitCaptchaHeaders['Cookie']);
     // --- END Log cookies being sent ---
 
     // --- Check for specific cookies ---
@@ -404,7 +411,18 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
 
 
     try {
-        const response = await makeRequest('GET', captchaUrl, null, headersToForward, 'arraybuffer'); // responseType: 'arraybuffer' for image
+        // --- Direct Axios call for captcha ---
+        const response = await axios.get(captchaUrl, {
+            headers: explicitCaptchaHeaders,
+            responseType: 'arraybuffer', // responseType: 'arraybuffer' for image
+            timeout: 60000,
+            maxRedirects: 5,
+            // If using ScraperAPI for this specific call, configure it here
+            // params: scraperApiKey ? { api_key: scraperApiKey, url: captchaUrl } : undefined,
+            // url: scraperApiKey ? scraperApiEndpoint : captchaUrl, // Target ScraperAPI if key exists
+        });
+        // --- END Direct Axios call for captcha ---
+
 
         console.log('[Service] Captcha image status:', response.status);
 
@@ -427,7 +445,7 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
              throw new Error(`Received non-image data for captcha: ${contentType}`);
          }
 
-        // --- NEW: Robust PNG signature check and data slicing with increased limit ---
+        // --- Robust PNG signature check and data slicing with increased limit ---
         let imageData = response.data; // Start with the raw data
         const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG signature bytes
         const searchLimit = Math.min(imageData.length, 2000); // Increased search limit to 2000 bytes
@@ -477,8 +495,13 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         }
         // --- END Robust PNG signature check and data slicing with increased limit ---
 
+        // --- NEW: Convert sliced image data to Base64 ---
+        const base64ImageData = imageData.toString('base64');
+        console.log('[Service] Converted image data to Base64 string.');
+        // --- END NEW ---
 
-        return { imageData: imageData, cookies: updatedCookies }; // Return the potentially sliced data
+
+        return { imageData: base64ImageData, cookies: updatedCookies }; // Return the Base64 string
 
     } catch (error) {
         console.error('[Service] Error in getCaptchaImage:', error.message);
