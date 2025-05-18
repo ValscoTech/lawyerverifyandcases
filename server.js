@@ -11,7 +11,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(
     cors({
-        origin: ["https://jr-portal.vercel.app", "https://frontend-lawyer.onrender.com", "https://ecourt-ftest.onrender.com"],
+        origin: ["https://jr-portal.vercel.app","https://verdant-cucurucho-13134b.netlify.app", "https://frontend-lawyer.onrender.com", "https://ecourt-ftest.onrender.com"],
         credentials: true,
     })
 );
