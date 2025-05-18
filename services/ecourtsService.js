@@ -123,8 +123,8 @@ async function makeRequest(method, targetUrl, payload, headersToForward, respons
             api_key: scraperApiKey,
             url: targetUrl,
             // Add other ScraperAPI parameters if needed for specific URLs
-            'country_code': 'in', // Example
-             'render': 'true' // Example for JS-heavy pages
+            // 'country_code': 'in', // Example
+            // 'render': 'true' // Example for JS-heavy pages
         };
 
         axiosConfig.params = scraperApiParams; // ScraperAPI params go in query string
@@ -365,13 +365,13 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
 
     const refererUrl = `${districtCourtBaseUrl}/case-status-search-by-petitioner-respondent/`;
 
-    // --- NEW: Explicitly add pll_language=en to the cookies ---
+    // --- Explicitly add pll_language=en to the cookies ---
     let cookiesToSend = cookies;
     if (!cookiesToSend.includes('pll_language=')) {
         cookiesToSend = `pll_language=en${cookiesToSend ? '; ' + cookiesToSend : ''}`;
         console.log('[Service] Added pll_language=en to cookies being sent.');
     }
-    // --- END NEW ---
+    // --- END Explicitly add pll_language=en ---
 
 
     const headersToForward = {
@@ -386,11 +386,11 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         'Cookie': cookiesToSend // Use the modified cookies string
     };
 
-    // --- NEW: Log cookies being sent ---
+    // --- Log cookies being sent ---
     console.log('[Service] Sending Cookies with Captcha Request:', headersToForward['Cookie']);
-    // --- END NEW ---
+    // --- END Log cookies being sent ---
 
-    // --- NEW: Check for specific cookies ---
+    // --- Check for specific cookies ---
     const hasPHPSESSID = cookiesToSend.includes('PHPSESSID=');
     const hasPllLanguage = cookiesToSend.includes('pll_language=');
     if (!hasPHPSESSID || !hasPllLanguage) {
@@ -400,7 +400,7 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
     } else {
         console.log('✅ Expected cookies (PHPSESSID, pll_language) are present in the cookie string.');
     }
-    // --- END NEW ---
+    // --- END Check for specific cookies ---
 
 
     try {
@@ -427,39 +427,68 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
              throw new Error(`Received non-image data for captcha: ${contentType}`);
          }
 
-        // --- NEW: Log first few bytes of image data ---
-        if (response.data && Buffer.isBuffer(response.data) && response.data.length > 0) {
-            const dataPreviewHex = response.data.slice(0, 16).toString('hex'); // Log first 16 bytes as hex
+        // --- NEW: Robust PNG signature check and data slicing with increased limit ---
+        let imageData = response.data; // Start with the raw data
+        const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG signature bytes
+        const searchLimit = Math.min(imageData.length, 500); // Increased search limit to 500 bytes
+
+        if (imageData && Buffer.isBuffer(imageData) && imageData.length > 8) { // PNG signature is 8 bytes
+            console.log("Total Captcha Image Data Length:", imageData.length, "bytes"); // Log total length
+            let dataPreviewHex = imageData.slice(0, 16).toString('hex'); // Log first 16 bytes as hex
             console.log("Raw Captcha Image Data Preview (Hex):", dataPreviewHex + '...');
-            if (!dataPreviewHex.startsWith('89504e47')) {
-                 console.warn("⚠️ Captcha image data does NOT start with PNG signature (89504e47). Data might be corrupted or not a PNG.");
-                 // --- NEW: Log full response data as string if not a PNG ---
+
+            let pngStartIndex = -1;
+            // Look for the PNG signature within the increased search limit
+            for (let i = 0; i <= searchLimit - pngSignature.length; i++) {
+                if (imageData.slice(i, i + pngSignature.length).equals(pngSignature)) {
+                    pngStartIndex = i;
+                    break;
+                }
+            }
+
+            if (pngStartIndex !== -1) {
+                console.log(`🎉 Found PNG signature at offset ${pngStartIndex}. Slicing data.`);
+                imageData = imageData.slice(pngStartIndex); // Slice the data
+                console.log("Sliced Captcha Image Data Preview (Hex):", imageData.slice(0, 16).toString('hex') + '...');
+                // No need to return here, the rest of the function uses the 'imageData' variable
+
+            } else {
+                 console.warn(`⚠️ Captcha image data does NOT contain PNG signature (89504e47) within the first ${searchLimit} bytes. Data might be corrupted or not a PNG.`);
+                 // Log full response data as string if not a PNG
                  try {
-                     const fullResponseText = Buffer.from(response.data).toString('utf8');
+                     const fullResponseText = Buffer.from(imageData).toString('utf8');
                      console.error("Full Captcha Response Data (String) when not PNG:", fullResponseText);
                  } catch(e) {
                      console.error("Could not convert full captcha response data to string for logging.");
                  }
-                 // --- END NEW ---
-            } else {
-                 console.log("🎉 Captcha image data starts with PNG signature.");
+                 throw new Error("Received data is not a valid PNG image.");
             }
         } else {
-            console.log("Raw Captcha Image Data is empty.");
+            console.log("Raw Captcha Image Data is empty or too short for PNG check.");
+             if (imageData && Buffer.isBuffer(imageData)) {
+                  try {
+                     const fullResponseText = Buffer.from(imageData).toString('utf8');
+                     console.error("Full Captcha Response Data (String) when empty/short:", fullResponseText);
+                 } catch(e) {
+                     console.error("Could not convert full captcha response data to string for logging.");
+                 }
+             }
+            throw new Error("Received empty or invalid data for captcha.");
         }
-        // --- END NEW ---
+        // --- END Robust PNG signature check and data slicing with increased limit ---
 
 
-        return { imageData: response.data, cookies: updatedCookies };
+        return { imageData: imageData, cookies: updatedCookies }; // Return the potentially sliced data
 
     } catch (error) {
         console.error('[Service] Error in getCaptchaImage:', error.message);
          if (error.response) {
              console.error("eCourts Response Status:", error.response.status);
-             // Do not log response.data for image requests as it's binary unless it was already logged above
-             if (!error.message.includes('Received non-image content type') && !error.message.includes('Captcha image data does NOT start with PNG signature')) {
+             // Log response data for non-image requests if not already logged above
+             if (!error.message.includes('Received non-image content type') && !error.message.includes('Captcha image data does NOT contain PNG signature')) {
                   try {
-                     console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+                     const errorResponseData = Buffer.from(error.response.data).toString('utf8');
+                     console.error("eCourts Response Data:", errorResponseData);
                  } catch(e) {
                      console.error("Could not convert error response data to string.");
                      console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
@@ -521,7 +550,8 @@ async function submitCaseSearch(districtCourtBaseUrl, scid, token, captchaValue,
              console.error("eCourts Response Status:", error.response.status);
              // Log response data for non-image requests
              try {
-                 console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+                 const errorResponseData = Buffer.from(error.response.data).toString('utf8');
+                 console.error("eCourts Response Data:", errorResponseData);
              } catch(e) {
                  console.error("Could not convert error response data to string.");
                  console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
@@ -569,7 +599,8 @@ async function searchCaseByCin(districtCourtBaseUrl, cino, cookies) {
              console.error("eCourts Response Status:", error.response.status);
              // Log response data for non-image requests
              try {
-                 console.error("eCourts Response Data:", Buffer.from(error.response.data).toString('utf8'));
+                 const errorResponseData = Buffer.from(error.response.data).toString('utf8');
+                 console.error("eCourts Response Data:", errorResponseData);
              } catch(e) {
                  console.error("Could not convert error response data to string.");
                  console.error("eCourts Response Data (Binary/Unknown):", error.response.data);
