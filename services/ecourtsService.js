@@ -107,7 +107,6 @@ function mergeCookies(existingCookies, newCookiesString) {
 
 
 // --- Helper function to make requests via ScraperAPI or directly ---
-// Keeping this for other requests, but captcha will use direct axios call
 async function makeRequest(method, targetUrl, payload, headersToForward, responseType = 'text', timeout = 60000) {
     const axiosConfig = {
         method: method,
@@ -351,9 +350,9 @@ async function getCaseSearchPageData(districtCourtBaseUrl, cookies) {
     }
 }
 
-// --- Replicate Curl 4: Get Captcha Image (Direct Axios Call & Base64 Output) ---
+// --- Replicate Curl 4: Get Captcha Image (via makeRequest & Base64 Output) ---
 async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captcha URL
-    console.log(`[Service] Fetching captcha image from URL: ${captchaUrl} using direct axios call.`);
+    console.log(`[Service] Fetching captcha image from URL: ${captchaUrl} using makeRequest.`);
     // We need the districtCourtBaseUrl for the Referer header.
     // Extract it from the captchaUrl.
     const districtCourtBaseUrlMatch = captchaUrl.match(/^(https?:\/\/[^\/]+)/);
@@ -411,17 +410,9 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
 
 
     try {
-        // --- Direct Axios call for captcha ---
-        const response = await axios.get(captchaUrl, {
-            headers: explicitCaptchaHeaders,
-            responseType: 'arraybuffer', // responseType: 'arraybuffer' for image
-            timeout: 60000,
-            maxRedirects: 5,
-            // If using ScraperAPI for this specific call, configure it here
-            // params: scraperApiKey ? { api_key: scraperApiKey, url: captchaUrl } : undefined,
-            // url: scraperApiKey ? scraperApiEndpoint : captchaUrl, // Target ScraperAPI if key exists
-        });
-        // --- END Direct Axios call for captcha ---
+        // --- Use makeRequest for captcha ---
+        const response = await makeRequest('GET', captchaUrl, null, explicitCaptchaHeaders, 'arraybuffer'); // responseType: 'arraybuffer' for image
+        // --- END Use makeRequest for captcha ---
 
 
         console.log('[Service] Captcha image status:', response.status);
@@ -495,10 +486,10 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         }
         // --- END Robust PNG signature check and data slicing with increased limit ---
 
-        // --- NEW: Convert sliced image data to Base64 ---
+        // --- Convert sliced image data to Base64 ---
         const base64ImageData = imageData.toString('base64');
         console.log('[Service] Converted image data to Base64 string.');
-        // --- END NEW ---
+        // --- END Convert sliced image data to Base64 ---
 
 
         return { imageData: base64ImageData, cookies: updatedCookies }; // Return the Base64 string
