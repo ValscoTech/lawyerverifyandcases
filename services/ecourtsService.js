@@ -430,9 +430,10 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         // --- NEW: Robust PNG signature check and data slicing with increased limit ---
         let imageData = response.data; // Start with the raw data
         const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG signature bytes
-        const searchLimit = Math.min(imageData.length, 200); // Increased search limit to 200 bytes
+        const searchLimit = Math.min(imageData.length, 500); // Increased search limit to 500 bytes
 
         if (imageData && Buffer.isBuffer(imageData) && imageData.length > 8) { // PNG signature is 8 bytes
+            console.log("Total Captcha Image Data Length:", imageData.length, "bytes"); // Log total length
             let dataPreviewHex = imageData.slice(0, 16).toString('hex'); // Log first 16 bytes as hex
             console.log("Raw Captcha Image Data Preview (Hex):", dataPreviewHex + '...');
 
@@ -452,7 +453,7 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
                 // No need to return here, the rest of the function uses the 'imageData' variable
 
             } else {
-                 console.warn("⚠️ Captcha image data does NOT contain PNG signature (89504e47) within the expected range. Data might be corrupted or not a PNG.");
+                 console.warn(`⚠️ Captcha image data does NOT contain PNG signature (89504e47) within the first ${searchLimit} bytes. Data might be corrupted or not a PNG.`);
                  // Log full response data as string if not a PNG
                  try {
                      const fullResponseText = Buffer.from(imageData).toString('utf8');
