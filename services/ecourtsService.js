@@ -3,19 +3,10 @@ require('dotenv').config();
 const cheerio = require('cheerio');
 const { URLSearchParams } = require('url');
 
-// --- ScraperAPI Configuration ---
-const scraperApiKey = process.env.SCRAPERAPI_KEY;
-const scraperApiEndpoint = 'http://api.scraperapi.com/';
-
-// Check if ScraperAPI key is provided
-if (!scraperApiKey) {
-    console.warn('WARNING: SCRAPERAPI_KEY environment variable is not set. ScraperAPI will not be used for ecourtsService requests.');
-}
-
-// Base URL for the main eCourts portal
+// --- Base URLs ---
 const ECOURTS_MAIN_PORTAL_URL = 'https://ecourts.gov.in/ecourts_home/index.php';
 const ECOURTS_BASE_DOMAIN = 'https://ecourts.gov.in'; // Added base domain for link construction
-
+// Note: High Court services use a different base domain: https://hcservices.ecourts.gov.in
 
 // Common headers based on your curl requests - adjust as needed
 const commonHeaders = {
@@ -40,8 +31,8 @@ const ajaxHeaders = {
     'Connection': 'keep-alive',
     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors', // Often 'cors' for AJAX, but check if 'no-cors' is needed via ScraperAPI
-    'Sec-Fetch-Site': 'same-origin', // Correct for requests from ScraperAPI to target
+    'Sec-Fetch-Mode': 'cors', // Often 'cors' for AJAX, but check if 'no-cors' is needed
+    'Sec-Fetch-Site': 'same-origin', // Correct for requests to target
     'Sec-GPC': '1',
     'User-Agent': commonHeaders['user-agent'],
     'X-Requested-With': 'XMLHttpRequest', // Important for AJAX requests
@@ -106,49 +97,25 @@ function mergeCookies(existingCookies, newCookiesString) {
 }
 
 
-// --- Helper function to make requests via ScraperAPI or directly ---
+// --- Helper function to make direct requests using axios ---
 async function makeRequest(method, targetUrl, payload, headersToForward, responseType = 'text', timeout = 60000) {
     const axiosConfig = {
         method: method,
+        url: targetUrl, // Target URL for direct request
         responseType: responseType,
         timeout: timeout,
         maxRedirects: 5, // Keep maxRedirects
+        headers: headersToForward // Headers for the direct request
     };
 
-    let response;
-
-    if (scraperApiKey) {
-        console.log(`[Service] Attempting to make ${method} request via ScraperAPI to: ${targetUrl}`);
-        const scraperApiParams = {
-            api_key: scraperApiKey,
-            url: targetUrl,
-            // Add other ScraperAPI parameters if needed for specific URLs
-            // 'country_code': 'in', // Example
-            // 'render': 'true' // Example for JS-heavy pages
-        };
-
-        axiosConfig.params = scraperApiParams; // ScraperAPI params go in query string
-        axiosConfig.headers = headersToForward; // Headers to be forwarded by ScraperAPI
-
-        // For POST requests via ScraperAPI, the original payload goes in the body
-        if (method.toLowerCase() === 'post') {
-            axiosConfig.data = payload;
-        }
-
-        response = await axios(scraperApiEndpoint, axiosConfig); // Request goes to ScraperAPI endpoint
-
-    } else {
-        console.log(`[Service] Attempting to make ${method} request directly to: ${targetUrl}`);
-        axiosConfig.headers = headersToForward; // Headers for the direct request
-
-        // For direct requests, the payload goes in the data property for POST
-        if (method.toLowerCase() === 'post') {
-            axiosConfig.data = payload;
-        }
-        axiosConfig.url = targetUrl; // Target URL for direct request
-
-        response = await axios(axiosConfig); // Request goes directly to target URL
+    // For POST requests, the payload goes in the data property
+    if (method.toLowerCase() === 'post') {
+        axiosConfig.data = payload;
     }
+
+    console.log(`[Service] Attempting to make ${method} request directly to: ${targetUrl}`);
+
+    const response = await axios(axiosConfig); // Request goes directly to target URL
 
     return response;
 }
@@ -421,23 +388,24 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
         const updatedCookies = mergeCookies(cookiesToSend, extractCookies(response.headers['set-cookie'])); // Merge with cookiesToSend
         console.log('[Service] Updated cookies after captcha request:', updatedCookies);
 
-        // --- Basic validation if data looks like an image ---
-        const contentType = response.headers["content-type"] || "image/png";
-         if (!contentType.startsWith('image/')) {
-             console.error(`🚨 WARNING: Received non-image content type for captcha: ${contentType}. Expected image/*.`);
-             // Attempt to log non-image data preview
-             try {
-                 const responseText = Buffer.from(response.data).toString('utf8');
-                 console.error('Non-image captcha response content preview (first 500 chars):', responseText.substring(0, 500));
-             } catch(e) {
-                 console.error('Could not convert non-image captcha data to string for preview.');
+        // --- NEW: Check if response.data is a Buffer before proceeding ---
+        if (!response.data || !Buffer.isBuffer(response.data)) {
+             console.error('[Service] Error: response.data is not a valid Buffer for captcha image.');
+             // Optionally log the type of response.data if it exists but isn't a buffer
+             if (response.data !== undefined && response.data !== null) {
+                 console.error('[Service] Received response.data type:', typeof response.data);
+                 // If it's a string, log a preview
+                 if (typeof response.data === 'string') {
+                     console.error('Response data preview (string):', response.data.substring(0, 500));
+                 }
              }
-             // Decide if this should throw an error or return null/error indicator
-             throw new Error(`Received non-image data for captcha: ${contentType}`);
-         }
+             throw new Error('Received invalid data for captcha image.');
+        }
+        // --- END NEW ---
+
 
         // --- Robust PNG signature check and data slicing with increased limit ---
-        let imageData = response.content; // Start with the raw data
+        let imageData = response.data; // Start with the raw data
         const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG signature bytes
         const searchLimit = Math.min(imageData.length, 2000); // Increased search limit to 2000 bytes
 
@@ -482,7 +450,10 @@ async function getCaptchaImage(captchaUrl, cookies) { // Expects the full captch
                      console.error("Could not convert full captcha response data to string for logging.");
                  }
              }
-            throw new Error("Received empty or invalid data for captcha.");
+            // This case is already covered by the new check at the beginning, but keeping this for clarity
+            if (!imageData || !Buffer.isBuffer(imageData)) {
+                 throw new Error("Received empty or invalid data for captcha.");
+            }
         }
         // --- END Robust PNG signature check and data slicing with increased limit ---
 
