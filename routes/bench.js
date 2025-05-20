@@ -52,7 +52,6 @@ router.post('/fetchBenches', async (req, res) => {
             'Accept': '*/*',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept-Encoding': 'gzip, deflate, br',
-            // It's good practice to add Origin and Referer for web scraping
             'Origin': 'https://hcservices.ecourts.gov.in',
             'Referer': 'https://hcservices.ecourts.gov.in/'
         };
@@ -64,22 +63,21 @@ router.post('/fetchBenches', async (req, res) => {
         let response;
         if (scraperApiKey) {
             console.log('Attempting to fetch benches via ScraperAPI...');
-            // When using ScraperAPI, the target URL goes into the 'url' parameter
             axiosConfig.params = {
                 api_key: scraperApiKey,
                 url: targetUrl,
             };
-            axiosConfig.headers = headersToForward; // These headers are passed to ScraperAPI to forward
+            axiosConfig.headers = headersToForward;
             response = await axios.post(
-                scraperApiEndpoint, // Request goes to ScraperAPI
-                payload,            // Original payload for the target URL
+                scraperApiEndpoint,
+                payload,
                 axiosConfig
             );
         } else {
             console.log('Attempting to fetch benches directly (ScraperAPI key not set)...');
-            axiosConfig.headers = headersToForward; // Headers for the direct request
+            axiosConfig.headers = headersToForward;
             response = await axios.post(
-                targetUrl, // Request goes directly to target
+                targetUrl,
                 payload,
                 axiosConfig
             );
@@ -88,24 +86,25 @@ router.post('/fetchBenches', async (req, res) => {
         console.log('Bench raw response status:', response.status);
         console.log('Bench raw response data preview:', String(response.data).substring(0, 200) + '...');
 
-        // --- FIX: Capture and Store Initial Cookies from the eCourts Response ---
         const setCookieHeaders = response.headers["set-cookie"] || [];
+        let initialEcourtsCookies = ''; // Initialize as empty string
+
         if (setCookieHeaders.length > 0) {
-            // Join all set-cookie headers into a single string suitable for a 'Cookie' header
-            const initialEcourtsCookies = setCookieHeaders.map(c => c.split(';')[0]).join('; ');
+            initialEcourtsCookies = setCookieHeaders.map(c => c.split(';')[0]).join('; ');
             req.session.initialEcourtsCookies = initialEcourtsCookies; // Store in session
             console.log('✅ Initial eCourts Cookies Captured and Stored:', req.session.initialEcourtsCookies);
         } else {
-            console.warn('⚠️ No initial eCourts cookies received from fetchBenches response.');
-            // Ensure the session variable is at least an empty string if no cookies were received
+            console.warn('⚠️ No initial eCourts cookies received from fetchBenches response. Ensuring session variable is empty or retained.');
+            // Ensure the session variable is at least an empty string if no cookies were received,
+            // or retain any existing ones if that's your intended fallback.
+            // For now, let's explicitly set it to an empty string if none are received.
             req.session.initialEcourtsCookies = '';
         }
-        // --- END FIX ---
 
         const benches = parseBenchString(response.data);
 
         req.session.benches = benches;
-        req.session.selectedBench = ''; // This will be set by the client after selection
+        req.session.selectedBench = '';
 
         // Save the session after updating it
         req.session.save((err) => {
@@ -113,12 +112,13 @@ router.post('/fetchBenches', async (req, res) => {
                 console.error("⚠️ Error saving session after fetchBenches:", err);
                 return res.status(500).json({ error: "Session save failed after fetching benches" });
             }
+            // --- MODIFIED: Include initialEcourtsCookies in the JSON response ---
             res.json({
                 benches: benches,
-                sessionID: getSessionCookie(req), // Include the Express session ID
-                // No need to send initialEcourtsCookies back to the client directly,
-                // as they are stored in the session for subsequent server-side use.
+                sessionID: getSessionCookie(req), // Express session ID
+                initialEcourtsCookies: initialEcourtsCookies // The actual cookies from ecourts.gov.in
             });
+            // --- END MODIFIED ---
         });
 
     } catch (error) {
