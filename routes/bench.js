@@ -57,7 +57,7 @@ router.post('/fetchBenches', async (req, res) => {
         };
 
         const axiosConfig = {
-            timeout: 45000,
+            timeout: 90000,
         };
 
         let response;
