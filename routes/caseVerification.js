@@ -13,26 +13,9 @@ if (!scraperApiKey) {
     console.warn('WARNING: SCRAPERAPI_KEY environment variable is not set. ScraperAPI will not be used for main verification route.');
 }
 
-// You no longer need getSessionCookie(req) if sessionID comes directly from the frontend
-// function getSessionCookie(req) {
-//     return req.sessionID || null;
-// }
-
 router.post('/', async (req, res) => {
     try {
         console.log("Request Body:", req.body); // Log the entire body to see what's coming from frontend
-
-        // --- IMPORTANT: Receive cookies and sessionId directly from the frontend body ---
-        // Assuming the frontend sends a structure like:
-        // {
-        //   "captcha": "...",
-        //   "petres_name": "...",
-        //   "cookies": { "PHPSESSID": "...", "some_other_cookie": "..." },
-        //   "sessionId": "...", // The specific session ID extracted on the frontend
-        //   "highCourtSelectedBench": "...", // For high court, if needed
-        //   "selectedDistrictBench": "...", // For district court, if needed
-        //   // ... other case search parameters
-        // }
 
         const {
             captcha,
@@ -46,22 +29,17 @@ router.post('/', async (req, res) => {
             selectedDistrictBench // For district court specific
         } = req.body;
 
-        // Determine court_code and state_code based on the type of search
-        // You might need more sophisticated logic here depending on how your frontend distinguishes
-        // between High Court and District Court searches.
         let court_code, state_code, court_complex_code;
 
-        // Example logic: You might pass a 'courtType' field from frontend
         if (req.body.courtType === 'highcourt') {
-            court_code = req.body.court_code; // If court_code is directly sent for HC
-            state_code = highCourtSelectedBench; // Use the bench from frontend
-            court_complex_code = highCourtSelectedBench; // High court often uses bench as complex code
+            court_code = req.body.court_code;
+            state_code = highCourtSelectedBench;
+            court_complex_code = highCourtSelectedBench;
         } else if (req.body.courtType === 'districtcourt') {
-            court_code = req.body.court_code; // If court_code is directly sent for DC
-            state_code = req.body.state_code; // If state_code is directly sent for DC
-            court_complex_code = selectedDistrictBench; // Use the bench from frontend
+            court_code = req.body.court_code;
+            state_code = req.body.state_code;
+            court_complex_code = selectedDistrictBench;
         } else {
-            // Fallback or error if courtType is not specified
             console.warn("Court type not specified in request body, attempting to use direct values.");
             court_code = req.body.court_code;
             state_code = req.body.state_code;
@@ -69,12 +47,11 @@ router.post('/', async (req, res) => {
         }
 
         // Format the cookies object into a string for the 'Cookie' header
-        // This is the cookie string you'll send to the eCourts website
         const cookieHeaderString = Object.entries(frontendCookies || {})
             .map(([key, value]) => `${key}=${value}`)
             .join('; ');
 
-        // Debugging missing fields
+        // Debugging missing fields - UPDATED to use `frontendCookies` and `cookieHeaderString`
         console.log({
             captcha, petres_name, rgyear, caseStatusSearchType, f,
             court_code, state_code, court_complex_code,
@@ -83,9 +60,9 @@ router.post('/', async (req, res) => {
             received_session_id_from_frontend: frontendSessionId
         });
 
-        // Validate required fields
+        // Validate required fields - UPDATED to use `cookieHeaderString`
         if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f ||
-            !court_code || !state_code || !court_complex_code || !cookieHeaderString) {
+            !court_code || !state_code || !court_complex_code || !cookieHeaderString) { // Changed from !captchaCookies
             console.error('Missing required fields or cookies from frontend for case verification.');
             return res.status(400).json({ error: 'Missing required fields or cookies' });
         }
@@ -131,9 +108,6 @@ router.post('/', async (req, res) => {
         const scraperApiParams = {
             api_key: scraperApiKey,
             url: targetUrl,
-            // render: 'true', // Uncomment if the target page loads content via JavaScript
-            // country_code: 'in', // Potentially useful
-            // follow_redirects: 'true', // Potentially useful
         };
 
         const axiosConfigToScraperAPI = {
@@ -147,7 +121,7 @@ router.post('/', async (req, res) => {
             console.log('Fetching case verification via ScraperAPI...');
             response = await axios.post(
                 scraperApiEndpoint,
-                payload, // The original form data to send to the target
+                payload,
                 axiosConfigToScraperAPI
             );
         } else {
@@ -171,7 +145,6 @@ router.post('/', async (req, res) => {
             }
         }
 
-        // Handle special parsing for `govData.con`
         if (govData && govData.con && Array.isArray(govData.con) && typeof govData.con[0] === 'string') {
             try {
                 govData.con = JSON.parse(govData.con[0]);
@@ -180,9 +153,8 @@ router.post('/', async (req, res) => {
             }
         }
 
-        // Send final response, including the sessionId received from the frontend
         res.json({
-            sessionID: frontendSessionId, // Return the sessionId that was passed from the frontend
+            sessionID: frontendSessionId,
             data: govData
         });
 
