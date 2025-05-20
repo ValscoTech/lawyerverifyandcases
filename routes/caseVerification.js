@@ -22,20 +22,18 @@ router.post('/', async (req, res) => {
         console.log("Request Cookies:", req.cookies);
         console.log("Session Data Before Update:", req.session);
 
-        // REMOVED: Do NOT allow client to send captchaCookies in req.body and overwrite session.
-        // captchaCookies should only be managed by the server session, set during fetchCaptcha.
+        // REMOVE THIS BLOCK if you are solely relying on session from bench.js
         // if (req.body.captchaCookies) {
         //   req.session.captchaCookies = req.body.captchaCookies;
         // }
 
-        console.log("Session's captchaCookies (after potential update via fetchCaptcha):", req.session.captchaCookies);
+        console.log("Updated captchaCookies (from session):", req.session.captchaCookies); // Should now be populated by bench.js
 
         // Extract fields from request body
         const { captcha, petres_name, rgyear, caseStatusSearchType, f } = req.body;
-        // Ensure these fallbacks correctly use session data
-        const court_code = req.session.selectedHighcourt || req.body.court_code; // Prefer session, fallback to body
-        const state_code = req.session.selectedBench || req.body.state_code; // Prefer session, fallback to body
-        const court_complex_code = req.session.selectedBench || req.body.court_complex_code; // Prefer session, fallback to body
+        const court_code = req.body.court_code || req.session.selectedHighcourt;
+        const state_code = req.body.state_code || req.session.selectedBench;
+        const court_complex_code = req.body.court_complex_code || req.session.selectedBench;
         const captchaCookies = req.session.captchaCookies; // Retrieve stored cookies from session
 
         // Debugging missing fields
