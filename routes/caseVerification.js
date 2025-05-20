@@ -18,6 +18,10 @@ if (!scraperApiKey) {
  * Also extracts common session IDs.
  * @param {string} cookieString - The raw Cookie header string.
  * @returns {{parsedCookies: object, sessionId: string|null}}
+ *
+ * NOTE: This function is useful for internal processing (like extracting sessionId for your frontend),
+ * but for the 'Cookie' header sent to the target server, it's often best to use the raw string
+ * as received from the browser, especially if the target server has unusual cookie parsing.
  */
 function parseCookieString(cookieString) {
     const parsedCookies = {};
@@ -111,24 +115,25 @@ router.post('/', async (req, res) => {
 
 
         // Parse the incoming cookie string into an object and extract session ID
+        // We still call this to derive the sessionId for your *response* to the frontend,
+        // but we won't use parsedCookies to rebuild the 'Cookie' header for the target.
         const { parsedCookies: actualFrontendCookies, sessionId: derivedSessionId } = parseCookieString(frontendCookiesString);
-        console.log(`[${timestamp}] Cookies string parsed from frontend:`, actualFrontendCookies);
+        console.log(`[${timestamp}] Cookies string parsed from frontend (for internal use):`, actualFrontendCookies);
         console.log(`[${timestamp}] Session ID derived from frontend cookies: ${derivedSessionId}`);
 
         // If frontendSessionId was not explicitly provided, use the derived one
         const finalSessionId = frontendSessionId || derivedSessionId;
         console.log(`[${timestamp}] Final Session ID to be used for response: ${finalSessionId}`);
 
-        // Format the parsed cookies object back into a string for the 'Cookie' header
-        const cookieHeaderString = Object.entries(actualFrontendCookies || {})
-            .map(([key, value]) => `${key}=${value}`)
-            .join('; ');
-        console.log(`[${timestamp}] Formatted Cookie header string for external request: "${cookieHeaderString}"`);
+        // **FIX:** Directly use the `frontendCookiesString` for the 'Cookie' header.
+        // This preserves the exact order and any duplicate cookie names as received.
+        const cookieHeaderStringForExternalRequest = frontendCookiesString;
+        console.log(`[${timestamp}] Using raw frontend cookies string for external 'Cookie' header: "${cookieHeaderStringForExternalRequest}"`);
 
         // Validate required fields
         console.log(`[${timestamp}] Validating required fields...`);
         if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f ||
-            !court_code || !state_code || !court_complex_code || !cookieHeaderString) {
+            !court_code || !state_code || !court_complex_code || !cookieHeaderStringForExternalRequest) {
             const missingFields = [];
             if (!captcha) missingFields.push('captcha');
             if (!petres_name) missingFields.push('petres_name');
@@ -138,7 +143,7 @@ router.post('/', async (req, res) => {
             if (!court_code) missingFields.push('court_code');
             if (!state_code) missingFields.push('state_code');
             if (!court_complex_code) missingFields.push('court_complex_code');
-            if (!cookieHeaderString) missingFields.push('cookiesString');
+            if (!cookieHeaderStringForExternalRequest) missingFields.push('cookiesString');
 
             console.error(`[${timestamp}] ERROR: Missing required fields for case verification: ${missingFields.join(', ')}`);
             return res.status(400).json({ error: `Missing required fields: ${missingFields.join(', ')}` });
@@ -167,7 +172,8 @@ router.post('/', async (req, res) => {
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Connection": "keep-alive",
-            "Cookie": cookieHeaderString, // CRUCIAL: Use the cookie string derived from frontend input
+            // **FIX APPLIED HERE**: Use the raw string directly
+            "Cookie": cookieHeaderStringForExternalRequest,
             "Origin": "https://hcservices.ecourts.gov.in",
             "Referer": "https://hcservices.ecourts.gov.in/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
