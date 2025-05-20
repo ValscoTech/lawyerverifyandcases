@@ -13,40 +13,81 @@ if (!scraperApiKey) {
     console.warn('WARNING: SCRAPERAPI_KEY environment variable is not set. ScraperAPI will not be used for main verification route.');
 }
 
-function getSessionCookie(req) {
-    return req.sessionID || null;
-}
+// You no longer need getSessionCookie(req) if sessionID comes directly from the frontend
+// function getSessionCookie(req) {
+//     return req.sessionID || null;
+// }
 
 router.post('/', async (req, res) => {
     try {
-        console.log("Request Cookies:", req.cookies);
-        console.log("Session Data Before Update:", req.session);
+        console.log("Request Body:", req.body); // Log the entire body to see what's coming from frontend
 
-       
-        if (req.body.captchaCookies) {
-          req.session.captchaCookies = req.body.captchaCookies;
+        // --- IMPORTANT: Receive cookies and sessionId directly from the frontend body ---
+        // Assuming the frontend sends a structure like:
+        // {
+        //   "captcha": "...",
+        //   "petres_name": "...",
+        //   "cookies": { "PHPSESSID": "...", "some_other_cookie": "..." },
+        //   "sessionId": "...", // The specific session ID extracted on the frontend
+        //   "highCourtSelectedBench": "...", // For high court, if needed
+        //   "selectedDistrictBench": "...", // For district court, if needed
+        //   // ... other case search parameters
+        // }
+
+        const {
+            captcha,
+            petres_name,
+            rgyear,
+            caseStatusSearchType,
+            f,
+            cookies: frontendCookies, // Get the cookies object from the frontend
+            sessionId: frontendSessionId, // Get the sessionId from the frontend
+            highCourtSelectedBench, // For high court specific
+            selectedDistrictBench // For district court specific
+        } = req.body;
+
+        // Determine court_code and state_code based on the type of search
+        // You might need more sophisticated logic here depending on how your frontend distinguishes
+        // between High Court and District Court searches.
+        let court_code, state_code, court_complex_code;
+
+        // Example logic: You might pass a 'courtType' field from frontend
+        if (req.body.courtType === 'highcourt') {
+            court_code = req.body.court_code; // If court_code is directly sent for HC
+            state_code = highCourtSelectedBench; // Use the bench from frontend
+            court_complex_code = highCourtSelectedBench; // High court often uses bench as complex code
+        } else if (req.body.courtType === 'districtcourt') {
+            court_code = req.body.court_code; // If court_code is directly sent for DC
+            state_code = req.body.state_code; // If state_code is directly sent for DC
+            court_complex_code = selectedDistrictBench; // Use the bench from frontend
+        } else {
+            // Fallback or error if courtType is not specified
+            console.warn("Court type not specified in request body, attempting to use direct values.");
+            court_code = req.body.court_code;
+            state_code = req.body.state_code;
+            court_complex_code = req.body.court_complex_code;
         }
 
-        console.log("Updated captchaCookies (from session):", req.session.captchaCookies); // Should now be populated by bench.js
-
-        // Extract fields from request body
-        const { captcha, petres_name, rgyear, caseStatusSearchType, f } = req.body;
-        const court_code = req.body.court_code || req.session.selectedHighcourt;
-        const state_code = req.body.state_code || req.session.selectedBench;
-        const court_complex_code = req.body.court_complex_code || req.session.selectedBench;
-        const captchaCookies = req.session.captchaCookies; // Retrieve stored cookies from session
+        // Format the cookies object into a string for the 'Cookie' header
+        // This is the cookie string you'll send to the eCourts website
+        const cookieHeaderString = Object.entries(frontendCookies || {})
+            .map(([key, value]) => `${key}=${value}`)
+            .join('; ');
 
         // Debugging missing fields
         console.log({
-            captcha, petres_name, rgyear, caseStatusSearchType, f, 
-            court_code, state_code, court_complex_code, captchaCookies
+            captcha, petres_name, rgyear, caseStatusSearchType, f,
+            court_code, state_code, court_complex_code,
+            received_cookies_from_frontend: frontendCookies,
+            formatted_cookie_header_string: cookieHeaderString,
+            received_session_id_from_frontend: frontendSessionId
         });
 
         // Validate required fields
-        if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f || 
-            !court_code || !state_code || !court_complex_code || !captchaCookies) {
-            console.error('Missing required fields or session data for case verification.');
-            return res.status(400).json({ error: 'Missing required fields or session data' });
+        if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f ||
+            !court_code || !state_code || !court_complex_code || !cookieHeaderString) {
+            console.error('Missing required fields or cookies from frontend for case verification.');
+            return res.status(400).json({ error: 'Missing required fields or cookies' });
         }
 
         // Construct payload for the eCourts site
@@ -70,13 +111,13 @@ router.post('/', async (req, res) => {
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Connection": "keep-alive",
-            "Cookie": captchaCookies, // CRUCIAL: Pass the session-stored captcha cookies
-            "Origin": "https://hcservices.ecourts.gov.in", // Set to target origin, not localhost
-            "Referer": "https://hcservices.ecourts.gov.in/", // Set to target referer, not localhost
+            "Cookie": cookieHeaderString, // CRUCIAL: Use the cookie string sent from the frontend
+            "Origin": "https://hcservices.ecourts.gov.in",
+            "Referer": "https://hcservices.ecourts.gov.in/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin", // Corrected as request will be same-origin from ScraperAPI's perspective
+            "Sec-Fetch-Site": "same-origin",
             "Sec-GPC": "1",
             "Sec-Ch-Ua": "\"Chromium\";v=\"134\", \"Not:A-Brand\";v=\"24\", \"Brave\";v=\"134\"",
             "Sec-Ch-Ua-Mobile": "?0",
@@ -87,21 +128,18 @@ router.post('/', async (req, res) => {
         // --- ScraperAPI Integration Logic ---
         const targetUrl = 'https://hcservices.ecourts.gov.in/hcservices/cases_qry/index_qry.php';
 
-        // Parameters for ScraperAPI itself
         const scraperApiParams = {
             api_key: scraperApiKey,
             url: targetUrl,
-            // Consider adding 'render': 'true' if the eCourts site loads content via JavaScript.
-            // If the site uses client-side rendering heavily, this can be critical.
-            // 'country_code': 'in' could be useful for India-specific IP addresses.
-            // 'follow_redirects': 'true' can be useful if the endpoint redirects.
+            // render: 'true', // Uncomment if the target page loads content via JavaScript
+            // country_code: 'in', // Potentially useful
+            // follow_redirects: 'true', // Potentially useful
         };
 
-        // Configuration for the Axios request *to ScraperAPI*
         const axiosConfigToScraperAPI = {
-            params: scraperApiParams,        // ScraperAPI specific query parameters
-            headers: headersToForward,       // Headers to be forwarded to the target URL
-            timeout: 60000,                  // Increased timeout as this is a complex request
+            params: scraperApiParams,
+            headers: headersToForward,
+            timeout: 60000,
         };
 
         let response;
@@ -114,7 +152,6 @@ router.post('/', async (req, res) => {
             );
         } else {
             console.log('Fetching case verification directly (ScraperAPI key not set)...');
-            // Fallback to direct request if ScraperAPI key is not set
             response = await axios.post(
                 targetUrl,
                 payload,
@@ -126,13 +163,11 @@ router.post('/', async (req, res) => {
         let govData = response.data;
         console.log('Raw response from govt site:', govData);
 
-        // Attempt JSON parsing if response is a string
         if (typeof govData === 'string') {
             try {
                 govData = JSON.parse(govData);
             } catch (jsonErr) {
                 console.error('Error parsing main response as JSON, leaving as string:', jsonErr.message);
-                // Leave as string if JSON.parse fails
             }
         }
 
@@ -145,15 +180,14 @@ router.post('/', async (req, res) => {
             }
         }
 
-        // Send final response
+        // Send final response, including the sessionId received from the frontend
         res.json({
-            sessionID: getSessionCookie(req),
+            sessionID: frontendSessionId, // Return the sessionId that was passed from the frontend
             data: govData
         });
 
     } catch (error) {
         console.error('Case verification error:', error);
-        // Provide more detailed error info for debugging
         if (process.env.NODE_ENV !== 'production' && error.response) {
             console.error('Error Response Status:', error.response.status);
             console.error('Error Response Data Preview:', String(error.response.data).substring(0, 200) + '...');
