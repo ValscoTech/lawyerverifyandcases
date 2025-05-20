@@ -1,15 +1,23 @@
 const express = require('express');
 const axios = require('axios');
 const querystring = require('querystring');
-const https = require('https');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const router = express.Router();
 
+// --- ScraperAPI Configuration ---
+const scraperApiKey = process.env.SCRAPERAPI_KEY;
+const scraperApiEndpoint = 'http://api.scraperapi.com/';
+
+if (!scraperApiKey) {
+    console.warn('WARNING: SCRAPERAPI_KEY environment variable is not set. ScraperAPI will not be used for fetchBenches.');
+}
+
+// Helper function to extract the session ID (for debugging your Express session)
 function getSessionCookie(req) {
     return req.sessionID || null;
 }
 
+// Parses raw bench string
 function parseBenchString(raw) {
     if (typeof raw !== 'string') {
         console.error('parseBenchString received non-string data:', raw);
@@ -22,23 +30,6 @@ function parseBenchString(raw) {
     });
 }
 
-const proxyHost = process.env.PROXY_HOST;
-const proxyPort = process.env.PROXY_PORT;
-const proxyUser = process.env.PROXY_USER;
-const proxyPass = process.env.PROXY_PASS;
-
-const proxyUrl = (proxyHost && proxyPort && proxyUser && proxyPass) ?
-    `http://${encodeURIComponent(proxyUser)}:${encodeURIComponent(proxyPass)}@${proxyHost}:${proxyPort}` :
-    null;
-
-let httpsAgent = null;
-
-if (proxyUrl) {
-    httpsAgent = new HttpsProxyAgent(proxyUrl, {
-        rejectUnauthorized: false // DANGER: Do not use in production!
-    });
-}
-
 router.post('/fetchBenches', async (req, res) => {
     try {
         const { selectedHighcourt } = req.body;
@@ -47,10 +38,6 @@ router.post('/fetchBenches', async (req, res) => {
         }
 
         req.session.selectedHighcourt = selectedHighcourt;
-        // The combinedCookie from captchaCookies is still used for the initial bench fetch
-        // because the 'cases_qry/index_qry.php' might still require some form of session.
-        // If 'index_qry.php' sets new cookies, we'll capture them below.
-        const combinedCookie = typeof req.session.captchaCookies === 'string' ? req.session.captchaCookies : '';
 
         const payload = querystring.stringify({
             action_code: 'fillHCBench',
@@ -58,65 +45,85 @@ router.post('/fetchBenches', async (req, res) => {
             appFlag: 'web'
         });
 
-        const headers = {
+        const targetUrl = 'https://hcservices.ecourts.gov.in/hcservices/cases_qry/index_qry.php';
+
+        const headersToForward = {
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Cookie': combinedCookie, // Use existing cookies for this request
             'Accept': '*/*',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept-Encoding': 'gzip, deflate, br',
+            // It's good practice to add Origin and Referer for web scraping
+            'Origin': 'https://hcservices.ecourts.gov.in',
+            'Referer': 'https://hcservices.ecourts.gov.in/'
         };
 
         const axiosConfig = {
-            headers: headers,
             timeout: 45000,
         };
 
-        if (httpsAgent) {
-            axiosConfig.httpsAgent = httpsAgent;
-            axiosConfig.proxy = false;
+        let response;
+        if (scraperApiKey) {
+            console.log('Attempting to fetch benches via ScraperAPI...');
+            // When using ScraperAPI, the target URL goes into the 'url' parameter
+            axiosConfig.params = {
+                api_key: scraperApiKey,
+                url: targetUrl,
+            };
+            axiosConfig.headers = headersToForward; // These headers are passed to ScraperAPI to forward
+            response = await axios.post(
+                scraperApiEndpoint, // Request goes to ScraperAPI
+                payload,            // Original payload for the target URL
+                axiosConfig
+            );
+        } else {
+            console.log('Attempting to fetch benches directly (ScraperAPI key not set)...');
+            axiosConfig.headers = headersToForward; // Headers for the direct request
+            response = await axios.post(
+                targetUrl, // Request goes directly to target
+                payload,
+                axiosConfig
+            );
         }
-
-        const response = await axios.post(
-            'https://hcservices.ecourts.gov.in/hcservices/cases_qry/index_qry.php',
-            payload,
-            axiosConfig
-        );
 
         console.log('Bench raw response status:', response.status);
         console.log('Bench raw response data preview:', String(response.data).substring(0, 200) + '...');
 
-        // --- NEW: Capture Cookies from the Bench Fetch Response ---
-        const setCookieHeaders = response.headers['set-cookie'] || [];
-        const newCombinedCookies = setCookieHeaders.map((c) => c.split(';')[0]).join('; ');
-
-        if (newCombinedCookies) {
-            req.session.captchaCookies = newCombinedCookies; // Overwrite or set the session cookies
-            req.session.save((err) => {
-                if (err) {
-                    console.error("⚠️ Error saving session after bench fetch:", err);
-                    // Decide how to handle this error:
-                    // Option 1: return res.status(500).json({ error: "Session save failed after bench fetch" });
-                    // Option 2: Just log and continue, hoping the request still works.
-                    // For now, we'll log and continue as it might not be critical for this specific step.
-                } else {
-                    console.log("✅ Cookies from Bench fetch stored:", req.session.captchaCookies);
-                }
-            });
+        // --- FIX: Capture and Store Initial Cookies from the eCourts Response ---
+        const setCookieHeaders = response.headers["set-cookie"] || [];
+        if (setCookieHeaders.length > 0) {
+            // Join all set-cookie headers into a single string suitable for a 'Cookie' header
+            const initialEcourtsCookies = setCookieHeaders.map(c => c.split(';')[0]).join('; ');
+            req.session.initialEcourtsCookies = initialEcourtsCookies; // Store in session
+            console.log('✅ Initial eCourts Cookies Captured and Stored:', req.session.initialEcourtsCookies);
         } else {
-            console.warn("⚠️ No new cookies received from bench response. Retaining previous or using none.");
-            // If no new cookies, the existing req.session.captchaCookies will persist.
+            console.warn('⚠️ No initial eCourts cookies received from fetchBenches response.');
+            // Ensure the session variable is at least an empty string if no cookies were received
+            req.session.initialEcourtsCookies = '';
         }
+        // --- END FIX ---
 
         const benches = parseBenchString(response.data);
 
         req.session.benches = benches;
-        req.session.selectedBench = ''; // You might want to set this based on selection later
+        req.session.selectedBench = ''; // This will be set by the client after selection
 
-        res.json({
-            benches: benches
+        // Save the session after updating it
+        req.session.save((err) => {
+            if (err) {
+                console.error("⚠️ Error saving session after fetchBenches:", err);
+                return res.status(500).json({ error: "Session save failed after fetching benches" });
+            }
+            res.json({
+                benches: benches,
+                sessionID: getSessionCookie(req), // Include the Express session ID
+                // No need to send initialEcourtsCookies back to the client directly,
+                // as they are stored in the session for subsequent server-side use.
+            });
         });
+
     } catch (error) {
         console.error('Error fetching benches:', error);
+
         if (process.env.NODE_ENV !== 'production' || error.code || error.syscall) {
             console.error('Full Error Details:', error);
             if (error.response) {
