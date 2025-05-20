@@ -20,30 +20,33 @@ function getSessionCookie(req) {
 router.post('/', async (req, res) => {
     try {
         console.log("Request Cookies:", req.cookies);
-        console.log("Session Data Before Case Verification:", req.session);
+        console.log("Session Data Before Update:", req.session);
 
-        // --- FIX: Use initialEcourtsCookies from session ---
-        // The captchaCookies are now populated by the /fetchBenches route
-        const initialEcourtsCookies = req.session.initialEcourtsCookies;
+       
+        if (req.body.captchaCookies) {
+          req.session.captchaCookies = req.body.captchaCookies;
+        }
+
+        console.log("Updated captchaCookies (from session):", req.session.captchaCookies); // Should now be populated by bench.js
 
         // Extract fields from request body
         const { captcha, petres_name, rgyear, caseStatusSearchType, f } = req.body;
-        // Ensure that selectedHighcourt and selectedBench are retrieved from the session
         const court_code = req.body.court_code || req.session.selectedHighcourt;
         const state_code = req.body.state_code || req.session.selectedBench;
         const court_complex_code = req.body.court_complex_code || req.session.selectedBench;
+        const captchaCookies = req.session.captchaCookies; // Retrieve stored cookies from session
 
         // Debugging missing fields
         console.log({
-            captcha, petres_name, rgyear, caseStatusSearchType, f,
-            court_code, state_code, court_complex_code, initialEcourtsCookies
+            captcha, petres_name, rgyear, caseStatusSearchType, f, 
+            court_code, state_code, court_complex_code, captchaCookies
         });
 
-        // Validate required fields and the presence of initialEcourtsCookies
-        if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f ||
-            !court_code || !state_code || !court_complex_code || !initialEcourtsCookies) {
-            console.error('Missing required fields or initial eCourts session data for case verification.');
-            return res.status(400).json({ error: 'Missing required fields or session data', details: 'Initial eCourts cookies might be missing from session. Ensure /fetchBenches was called first.' });
+        // Validate required fields
+        if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f || 
+            !court_code || !state_code || !court_complex_code || !captchaCookies) {
+            console.error('Missing required fields or session data for case verification.');
+            return res.status(400).json({ error: 'Missing required fields or session data' });
         }
 
         // Construct payload for the eCourts site
@@ -67,7 +70,7 @@ router.post('/', async (req, res) => {
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Connection": "keep-alive",
-            "Cookie": initialEcourtsCookies, // CRUCIAL: Pass the session-stored initial eCourts cookies
+            "Cookie": captchaCookies, // CRUCIAL: Pass the session-stored captcha cookies
             "Origin": "https://hcservices.ecourts.gov.in", // Set to target origin, not localhost
             "Referer": "https://hcservices.ecourts.gov.in/", // Set to target referer, not localhost
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -84,18 +87,21 @@ router.post('/', async (req, res) => {
         // --- ScraperAPI Integration Logic ---
         const targetUrl = 'https://hcservices.ecourts.gov.in/hcservices/cases_qry/index_qry.php';
 
+        // Parameters for ScraperAPI itself
         const scraperApiParams = {
             api_key: scraperApiKey,
             url: targetUrl,
-            // 'render': 'true' can be very useful if the eCourts site loads content via JavaScript.
-            // 'country_code': 'in' can be useful for India-specific IP addresses if that's a requirement.
+            // Consider adding 'render': 'true' if the eCourts site loads content via JavaScript.
+            // If the site uses client-side rendering heavily, this can be critical.
+            // 'country_code': 'in' could be useful for India-specific IP addresses.
             // 'follow_redirects': 'true' can be useful if the endpoint redirects.
         };
 
+        // Configuration for the Axios request *to ScraperAPI*
         const axiosConfigToScraperAPI = {
-            params: scraperApiParams,
-            headers: headersToForward,
-            timeout: 60000,
+            params: scraperApiParams,        // ScraperAPI specific query parameters
+            headers: headersToForward,       // Headers to be forwarded to the target URL
+            timeout: 60000,                  // Increased timeout as this is a complex request
         };
 
         let response;
