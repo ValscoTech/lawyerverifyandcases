@@ -13,57 +13,97 @@ if (!scraperApiKey) {
     console.warn('WARNING: SCRAPERAPI_KEY environment variable is not set. ScraperAPI will not be used for main verification route.');
 }
 
+/**
+ * Parses a cookie string into an object, handling potential duplicates by taking the last value.
+ * Also extracts common session IDs.
+ * @param {string} cookieString - The raw Cookie header string.
+ * @returns {{parsedCookies: object, sessionId: string|null}}
+ */
+function parseCookieString(cookieString) {
+    const parsedCookies = {};
+    let sessionId = null;
+
+    if (!cookieString) {
+        return { parsedCookies: {}, sessionId: null };
+    }
+
+    // Split by '; ' to get individual cookie parts
+    cookieString.split('; ').forEach(part => {
+        const [name, value] = part.split('=');
+        if (name && value) {
+            // Assign the value. If there are duplicates, the last one wins (as in browser behavior).
+            parsedCookies[name.trim()] = value.trim();
+
+            // Check for common session cookie names
+            const lowerCaseName = name.trim().toLowerCase();
+            if (lowerCaseName === 'phpsessid' ||
+                lowerCaseName.startsWith('asp.net_sessionid') ||
+                lowerCaseName.startsWith('jsessionid') ||
+                lowerCaseName.includes('session') || // Generic check
+                lowerCaseName === 'hcservices_sessid' // Specific to your case
+            ) {
+                sessionId = value.trim();
+            }
+        }
+    });
+
+    // Prioritize specific session IDs if present in the final parsed set
+    if (parsedCookies['JSESSIONID']) {
+        sessionId = parsedCookies['JSESSIONID'];
+    } else if (parsedCookies['PHPSESSID']) {
+        sessionId = parsedCookies['PHPSESSID'];
+    } else if (parsedCookies['HCSERVICES_SESSID']) { // Specific to your case
+        sessionId = parsedCookies['HCSERVICES_SESSID'];
+    }
+
+    return { parsedCookies, sessionId };
+}
+
 router.post('/', async (req, res) => {
     try {
         console.log("Request Body:", req.body); // Log the entire body to see what's coming from frontend
 
+        // Destructure parameters from the JSON body
         const {
             captcha,
             petres_name,
             rgyear,
             caseStatusSearchType,
             f,
-            cookies: frontendCookies, // Get the cookies object from the frontend
-            sessionId: frontendSessionId, // Get the sessionId from the frontend
-            highCourtSelectedBench, // For high court specific
-            selectedDistrictBench // For district court specific
+            court_code, // Directly from frontend JSON
+            state_code, // Directly from frontend JSON
+            court_complex_code, // Directly from frontend JSON
+            cookies: frontendCookiesString, // Receive the cookies as a STRING from frontend
+            sessionId: frontendSessionId // Receive the sessionId (optional, can be derived)
         } = req.body;
 
-        let court_code, state_code, court_complex_code;
+        // Parse the incoming cookie string into an object and extract session ID
+        const { parsedCookies: actualFrontendCookies, sessionId: derivedSessionId } = parseCookieString(frontendCookiesString);
 
-        if (req.body.courtType === 'highcourt') {
-            court_code = req.body.court_code;
-            state_code = highCourtSelectedBench;
-            court_complex_code = highCourtSelectedBench;
-        } else if (req.body.courtType === 'districtcourt') {
-            court_code = req.body.court_code;
-            state_code = req.body.state_code;
-            court_complex_code = selectedDistrictBench;
-        } else {
-            console.warn("Court type not specified in request body, attempting to use direct values.");
-            court_code = req.body.court_code;
-            state_code = req.body.state_code;
-            court_complex_code = req.body.court_complex_code;
-        }
+        // If frontendSessionId was not explicitly provided, use the derived one
+        const finalSessionId = frontendSessionId || derivedSessionId;
 
-        // Format the cookies object into a string for the 'Cookie' header
-        const cookieHeaderString = Object.entries(frontendCookies || {})
+
+        // Format the parsed cookies object back into a string for the 'Cookie' header
+        // This ensures proper formatting for the header, even if duplicates were in the original string
+        const cookieHeaderString = Object.entries(actualFrontendCookies || {})
             .map(([key, value]) => `${key}=${value}`)
             .join('; ');
 
-        // Debugging missing fields - UPDATED to use `frontendCookies` and `cookieHeaderString`
+        // Debugging missing fields
         console.log({
             captcha, petres_name, rgyear, caseStatusSearchType, f,
             court_code, state_code, court_complex_code,
-            received_cookies_from_frontend: frontendCookies,
+            received_cookies_string_from_frontend: frontendCookiesString,
+            parsed_cookies_object: actualFrontendCookies,
             formatted_cookie_header_string: cookieHeaderString,
-            received_session_id_from_frontend: frontendSessionId
+            final_session_id_for_response: finalSessionId
         });
 
-        // Validate required fields - UPDATED to use `cookieHeaderString`
+        // Validate required fields
         if (!captcha || !petres_name || !rgyear || !caseStatusSearchType || !f ||
-            !court_code || !state_code || !court_complex_code || !cookieHeaderString) { // Changed from !captchaCookies
-            console.error('Missing required fields or cookies from frontend for case verification.');
+            !court_code || !state_code || !court_complex_code || !cookieHeaderString) {
+            console.error('Missing required fields or cookies string from frontend for case verification.');
             return res.status(400).json({ error: 'Missing required fields or cookies' });
         }
 
@@ -88,7 +128,7 @@ router.post('/', async (req, res) => {
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Connection": "keep-alive",
-            "Cookie": cookieHeaderString, // CRUCIAL: Use the cookie string sent from the frontend
+            "Cookie": cookieHeaderString, // CRUCIAL: Use the cookie string derived from frontend input
             "Origin": "https://hcservices.ecourts.gov.in",
             "Referer": "https://hcservices.ecourts.gov.in/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -154,7 +194,7 @@ router.post('/', async (req, res) => {
         }
 
         res.json({
-            sessionID: frontendSessionId,
+            sessionID: finalSessionId, // Send back the derived session ID
             data: govData
         });
 
