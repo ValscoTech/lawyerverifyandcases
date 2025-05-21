@@ -34,9 +34,11 @@ function parseCookieString(cookieString) {
 
     console.log(`[${new Date().toISOString()}] parseCookieString: Attempting to parse cookie string: "${cookieString}"`);
 
-    // Split by '; ' to get individual cookie parts
-    cookieString.split('; ').forEach(part => {
-        const [name, value] = part.split('=');
+    // Split by ';' first, then trim each part before splitting by '='
+    // This is more robust against variations in cookie string formatting (e.g., missing spaces)
+    cookieString.split(';').forEach(part => {
+        const trimmedPart = part.trim();
+        const [name, value] = trimmedPart.split('=');
         if (name && value) {
             const trimmedName = name.trim();
             const trimmedValue = value.trim();
@@ -57,7 +59,7 @@ function parseCookieString(cookieString) {
                 console.log(`[${new Date().toISOString()}]   Identified potential session cookie: ${trimmedName}`);
             }
         } else {
-            console.warn(`[${new Date().toISOString()}]   parseCookieString: Skipping malformed cookie part: "${part}"`);
+            console.warn(`[${new Date().toISOString()}]   parseCookieString: Skipping malformed cookie part: "${trimmedPart}"`);
         }
     });
 
@@ -117,7 +119,7 @@ router.post('/', async (req, res) => {
         // Parse the incoming cookie string into an object and extract session ID
         // We still call this to derive the sessionId for your *response* to the frontend,
         // but we won't use parsedCookies to rebuild the 'Cookie' header for the target.
-        const { parsedCookies: actualFrontendCookies, sessionId: derivedSessionId } = parseCookieString(frontendCookiesString);
+        const { parsedCookies: actualFrontendCookies, sessionId: derivedSessionId } = parseCookieString(frontendCookiesString || ''); // Ensure it's not null/undefined
         console.log(`[${timestamp}] Cookies string parsed from frontend (for internal use):`, actualFrontendCookies);
         console.log(`[${timestamp}] Session ID derived from frontend cookies: ${derivedSessionId}`);
 
@@ -127,7 +129,7 @@ router.post('/', async (req, res) => {
 
         // **FIX:** Directly use the `frontendCookiesString` for the 'Cookie' header.
         // This preserves the exact order and any duplicate cookie names as received.
-        const cookieHeaderStringForExternalRequest = frontendCookiesString;
+        const cookieHeaderStringForExternalRequest = frontendCookiesString || ''; // Ensure it's not null/undefined
         console.log(`[${timestamp}] Using raw frontend cookies string for external 'Cookie' header: "${cookieHeaderStringForExternalRequest}"`);
 
         // Validate required fields
@@ -198,18 +200,20 @@ router.post('/', async (req, res) => {
             const scraperApiParams = {
                 api_key: scraperApiKey,
                 url: targetUrl,
+                // For POST requests through ScraperAPI, you typically send the headers directly
+                // and the payload as the body. ScraperAPI handles forwarding.
             };
             const axiosConfigToScraperAPI = {
                 params: scraperApiParams,
-                headers: headersToForward,
+                headers: headersToForward, // Headers to be forwarded to the target
                 timeout: 60000,
             };
             console.log(`[${timestamp}] ScraperAPI request parameters:`, scraperApiParams);
             console.log(`[${timestamp}] ScraperAPI axios config (headers to forward, timeout):`, axiosConfigToScraperAPI);
 
             response = await axios.post(
-                scraperApiEndpoint,
-                payload,
+                scraperApiEndpoint, // Post to ScraperAPI endpoint
+                payload, // This is the body to be forwarded to the target URL by ScraperAPI
                 axiosConfigToScraperAPI
             );
             console.log(`[${timestamp}] Received response from ScraperAPI. Status: ${response.status}`);
@@ -236,6 +240,8 @@ router.post('/', async (req, res) => {
                 console.log(`[${timestamp}] Successfully parsed main response data as JSON.`);
             } catch (jsonErr) {
                 console.error(`[${timestamp}] ERROR: Error parsing main response as JSON, leaving as string: ${jsonErr.message}`);
+                // If it's HTML/text and not JSON, log the full response for debugging
+                console.error(`[${timestamp}] Full raw response data: ${String(govData)}`);
             }
         }
 
@@ -249,11 +255,33 @@ router.post('/', async (req, res) => {
             }
         }
 
+        // IMPORTANT: Capture and send back any new cookies from the case verification response
+        const newSetCookieHeaders = response.headers['set-cookie'];
+        let updatedCookiesForFrontend = {};
+        if (newSetCookieHeaders) {
+             newSetCookieHeaders.forEach(cookieStr => {
+                const parts = cookieStr.split(';')[0].split('='); // Get just the name=value part
+                if (parts.length >= 2) {
+                    const cookieName = parts[0].trim();
+                    const cookieValue = parts.slice(1).join('=').trim();
+                    updatedCookiesForFrontend[cookieName] = cookieValue;
+                }
+            });
+            console.log(`[${timestamp}] New/Updated cookies received from verification response:`, updatedCookiesForFrontend);
+        } else {
+            console.log(`[${timestamp}] No new 'Set-Cookie' headers received from verification response.`);
+            // If no new cookies, send back the ones that were sent to this request,
+            // parsed into an object, as the frontend expects an object.
+            updatedCookiesForFrontend = actualFrontendCookies; // Re-use the parsed object from frontend input
+        }
+
+
         console.log(`[${timestamp}] Final processed data to send to frontend:`, govData);
 
         res.json({
             sessionID: finalSessionId, // Send back the derived session ID
-            data: govData
+            data: govData,
+            cookies: updatedCookiesForFrontend // Send back the updated cookies to the frontend as an object
         });
         console.log(`[${timestamp}] Response sent successfully to frontend.`);
 
